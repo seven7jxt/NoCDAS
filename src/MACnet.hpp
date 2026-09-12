@@ -44,6 +44,7 @@ public:
 	VCNetwork* vcNetwork;
 
 	void create_input();
+	int weight_row_offset(int layer_id) const;
 	vector<vector<float>> weight_table;
 	vector<vector<float>> input_table;
 	vector<vector<float>> output_table;

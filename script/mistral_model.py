@@ -148,7 +148,7 @@ def build_config(exp):
         config.num_key_value_heads = 8
         config.head_dim = config.hidden_size // config.num_attention_heads
         
-        simulation_seq_len = 1
+        simulation_seq_len = 16
         apply_quantization = True
 
     else:

@@ -91,6 +91,23 @@ bool serpentine_sort(int id_a, int id_b) {
     }
 }
 
+int MACnet::weight_row_offset(int layer_id) const
+{
+    int rows = 0;
+    for (int i = 0; i < layer_id; ++i) {
+        switch (cnnmodel->all_layer_type[i]) {
+        case 'c': rows += cnnmodel->all_layer_size[i][3]; break;
+        case 'f': rows += cnnmodel->all_layer_size[i][1]; break;
+        case 'e': rows += cnnmodel->all_layer_size[i][0]; break;
+        case 'm': rows += cnnmodel->all_layer_size[i][1]; break;
+        case 'l': rows += 2; break;
+        case 'r': rows += 1; break;
+        default: break;
+        }
+    }
+    return rows;
+}
+
 void MACnet::create_input(){
     input_table.resize(in_ch);
     int outmatsize = o_x * o_y;
@@ -132,12 +149,14 @@ void MACnet::create_input(){
         }
     }
 
+    const int layer_weight_start = weight_row_offset(c_layer);
+
     if (this->cnnmodel->all_layer_type[c_layer]=='c')
     {
         for(int i=0;i<o_ch;i++){
             for(int j=0;j<in_ch;j++) {
-                weight_table[i*in_ch + j].assign(this->cnnmodel->all_weight_in[st_w + i].begin() + j*wmatsize,this->cnnmodel->all_weight_in[st_w + i].begin() + j*wmatsize + wmatsize); 
-                weight_table[i*in_ch + j].push_back(this->cnnmodel->all_weight_in[st_w + i].back()); 
+                weight_table[i*in_ch + j].assign(this->cnnmodel->all_weight_in[layer_weight_start + i].begin() + j*wmatsize,this->cnnmodel->all_weight_in[layer_weight_start + i].begin() + j*wmatsize + wmatsize); 
+                weight_table[i*in_ch + j].push_back(this->cnnmodel->all_weight_in[layer_weight_start + i].back()); 
             }
         }
         st_w += o_ch;
@@ -145,14 +164,14 @@ void MACnet::create_input(){
     else if (this->cnnmodel->all_layer_type[c_layer]=='f')
     {
         for(int i=0;i<w_ch;i++){
-            weight_table[i].assign(this->cnnmodel->all_weight_in[st_w + i].begin(),this->cnnmodel->all_weight_in[st_w + i].end());
+            weight_table[i].assign(this->cnnmodel->all_weight_in[layer_weight_start + i].begin(),this->cnnmodel->all_weight_in[layer_weight_start + i].end());
         }
         st_w += w_ch;
     }
     else if (this->cnnmodel->all_layer_type[c_layer] == 'm' || this->cnnmodel->all_layer_type[c_layer] == 'e' || this->cnnmodel->all_layer_type[c_layer] == 'l' || this->cnnmodel->all_layer_type[c_layer] == 'r')
     {
         for(int i=0;i<w_ch;i++){
-            weight_table[i].assign(this->cnnmodel->all_weight_in[st_w + i].begin(),this->cnnmodel->all_weight_in[st_w + i].end());
+            weight_table[i].assign(this->cnnmodel->all_weight_in[layer_weight_start + i].begin(),this->cnnmodel->all_weight_in[layer_weight_start + i].end());
         }
         st_w += w_ch;
     }
@@ -659,6 +678,26 @@ void MACnet::checkStatus()
     in_x = o_x; in_y = o_y; in_ch = o_ch; 
     
     layer_outputs_history[c_layer] = std::move(output_table);
+
+    // Locate the first non-finite layer result without changing simulation state.
+    // This is intentionally a diagnostic rather than an assertion: release builds
+    // must still report the offending layer before producing the final NaN output.
+    static bool reported_nonfinite = false;
+    if (!reported_nonfinite) {
+        const auto& layer_result = layer_outputs_history[c_layer];
+        for (size_t ch = 0; ch < layer_result.size() && !reported_nonfinite; ++ch) {
+            for (size_t idx = 0; idx < layer_result[ch].size(); ++idx) {
+                if (!std::isfinite(layer_result[ch][idx])) {
+                    std::cerr << "NONFINITE_LAYER_OUTPUT layer=" << c_layer
+                              << " type=" << cnnmodel->all_layer_type[c_layer]
+                              << " channel=" << ch << " index=" << idx
+                              << " value=" << layer_result[ch][idx] << std::endl;
+                    reported_nonfinite = true;
+                    break;
+                }
+            }
+        }
+    }
 
     std::vector<int> layers_to_delete;
     for (auto const& item : layer_outputs_history) {
