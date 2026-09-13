@@ -399,7 +399,7 @@ void MAC::runOneStep()
                 } 
                 else if (fn == EMBEDDING) {                                                         // Embedding Lookup
                     int idx = tmpm % m_size;
-                    outfeature = weight[idx];
+                    outfeature = weight[idx] * std::sqrt(static_cast<float>(m_size));
                 }
                 else if (fn == RMSNORM) {                                                           // RMSNorm
                     // infeature contains [rms, x_i, gamma]
