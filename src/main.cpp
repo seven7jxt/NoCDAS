@@ -234,6 +234,9 @@ int main(int arg_num, char *arg_vet[]) {
 
     cout << "Cycles: " << cycles << endl;
     cout << "Packet id: " << packet_id << endl;
+    cout << "Flit size (bytes): " << FLIT_LENGTH << endl;
+    cout << "Total inter-router flit-hops: " << vcNetwork->getTotalFlitHops() << endl;
+    cout << "Total inter-router byte-hops: " << vcNetwork->getTotalByteHops() << endl;
 
 #ifdef Countlatency
 	int maxoutnum = CountNum;

@@ -136,6 +136,7 @@ bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI,
     msg.out_cycle = pecycle;
     msg.sequence_id = 0;
     msg.signal_id = p_id;
+    msg.layer_id = net->c_layer;
     msg.slave_id = d_id;                       //NI
     msg.source_id = NI_id;                     // NI
     msg.type = type;                           // 0 1 2 3

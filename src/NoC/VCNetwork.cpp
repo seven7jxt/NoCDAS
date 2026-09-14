@@ -10,6 +10,7 @@ VCNetwork::VCNetwork (int router_num, int router_num_x, int NI_num_total, int* N
   int NI_seq = 0;
   routerNum = router_num;
   NINum = NI_num_total;
+  total_flit_hops = 0;
   router_list.reserve(router_num);
   NI_list.reserve(NI_num_total);
 
@@ -67,6 +68,28 @@ VCNetwork::VCNetwork (int router_num, int router_num_x, int NI_num_total, int* N
       next->out_port_list[0]->out_link->rOutPort = next->out_port_list[0];
     }
   }
+}
+
+void VCNetwork::recordFlitHop(int layer_id){
+  ++total_flit_hops;
+  ++layer_flit_hops[layer_id];
+}
+
+std::uint64_t VCNetwork::getTotalFlitHops() const{
+  return total_flit_hops;
+}
+
+std::uint64_t VCNetwork::getTotalByteHops() const{
+  return total_flit_hops * static_cast<std::uint64_t>(FLIT_LENGTH);
+}
+
+std::uint64_t VCNetwork::getLayerFlitHops(int layer_id) const{
+  auto it = layer_flit_hops.find(layer_id);
+  return it == layer_flit_hops.end() ? 0 : it->second;
+}
+
+std::uint64_t VCNetwork::getLayerByteHops(int layer_id) const{
+  return getLayerFlitHops(layer_id) * static_cast<std::uint64_t>(FLIT_LENGTH);
 }
 
 void VCNetwork::runOneStep(){

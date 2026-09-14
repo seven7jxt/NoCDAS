@@ -21,6 +21,7 @@ struct Message{
   int QoS = 0;
   int source_id;
   int signal_id;
+  int layer_id = -1;                 // Model layer that generated this packet
   
   std::vector<float> data;          // Contains inputs and partial sums
   int psum_offset = 0;              // Contains the start index of psum in 'data'.

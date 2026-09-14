@@ -582,6 +582,12 @@ void VCRouter::outPortDequeue(){
             }
 
             out_port_list[i]->out_link->rInPort->buffer_list[flit->vc]->enqueue(flit);
+
+            // Count traffic crossing a physical router-to-router link. Local
+            // NI transfers use ports >= 4 and are intentionally excluded.
+            if (i < 4) {
+                vcNetwork->recordFlitHop(flit->packet->message.layer_id);
+            }
             
             flit->sched_time = cycles + compute_delay + LINK_TIME - 1;
 

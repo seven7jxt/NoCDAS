@@ -366,6 +366,7 @@ void MACnet::inject_cNoC_traffic() {
                 dist_msg.compute_op = o_fn;
                 dist_msg.out_cycle = cycles; 
                 dist_msg.signal_id = packet_id + y;
+                dist_msg.layer_id = c_layer;
 
                 int base_idx = y * fused_dim;
                 
@@ -406,6 +407,7 @@ void MACnet::inject_cNoC_traffic() {
                 dist_msg.compute_op = o_fn;
                 dist_msg.out_cycle = cycles; 
                 dist_msg.signal_id = packet_id;
+                dist_msg.layer_id = c_layer;
 
                 auto router = this->vcNetwork->router_list[router_id];
                 if (!this->weight_table.empty()) {
@@ -445,6 +447,7 @@ void MACnet::inject_cNoC_traffic() {
             comp_msg.compute_op = o_fn;
             comp_msg.out_cycle = cycles; 
             comp_msg.signal_id = packet_id + y;
+            comp_msg.layer_id = c_layer;
 
             comp_msg.n_heads = (o_fn == ATTENTION) ? this->cnnmodel->all_layer_size[c_layer][3] : 1;
             comp_msg.running_max.assign(comp_msg.n_heads, -1e9);
@@ -732,10 +735,19 @@ void MACnet::checkStatus()
         vcNetwork->clearAllRouterSRAM();
     }
 
+    const int finished_layer = c_layer;
+    const std::uint64_t finished_layer_flit_hops =
+        vcNetwork->getLayerFlitHops(finished_layer);
+    const std::uint64_t finished_layer_byte_hops =
+        vcNetwork->getLayerByteHops(finished_layer);
+
     c_layer++; 
     if(c_layer == n_layer)
     {
-        cout << "All finished! at cycle " << cycles << endl;
+        cout << "All finished! at cycle " << cycles
+             << " | Layer " << finished_layer
+             << " flit-hops: " << finished_layer_flit_hops
+             << " byte-hops: " << finished_layer_byte_hops << endl;
         output_table = layer_outputs_history[c_layer - 1];
         Layer_latency.push_back(cycles);
         readyflag = 2;
@@ -744,7 +756,9 @@ void MACnet::checkStatus()
     }
     else
     {
-        cout << "Layer finished " << (c_layer-1) << " at cycle " << cycles << endl;
+        cout << "Layer finished " << finished_layer << " at cycle " << cycles
+             << " | flit-hops: " << finished_layer_flit_hops
+             << " byte-hops: " << finished_layer_byte_hops << endl;
         Layer_latency.push_back(cycles);
         packet_id = packet_id + o_ch*o_x*o_y;
     }

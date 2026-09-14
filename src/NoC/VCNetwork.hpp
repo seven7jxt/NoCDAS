@@ -14,6 +14,8 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <cstdint>
+#include <map>
 
 extern std::ofstream router_monitor;
 extern unsigned int cycles;
@@ -58,6 +60,14 @@ public:
 
   void show_URS_distribution();
 
+  // Traffic counters for router-to-router links.
+  // One flit crossing one inter-router link contributes one flit-hop.
+  void recordFlitHop(int layer_id);
+  std::uint64_t getTotalFlitHops() const;
+  std::uint64_t getTotalByteHops() const;
+  std::uint64_t getLayerFlitHops(int layer_id) const;
+  std::uint64_t getLayerByteHops(int layer_id) const;
+
 //   added
 //  void show_VCR_buffer_state();
 
@@ -65,8 +75,10 @@ public:
   int NINum;
 
   ~VCNetwork ();
+
+private:
+  std::uint64_t total_flit_hops;
+  std::map<int, std::uint64_t> layer_flit_hops;
 };
 
 #endif /* VCNETWORK_HPP_ */
-
-
