@@ -146,6 +146,23 @@ def build_config(exp):
         simulation_seq_len = 64
         apply_quantization = True
 
+    elif exp == "real":
+        print("[SETUP] Real-scale Llama-2-7B architecture with 1 layer")
+        # This is a one-layer architectural slice of Llama-2-7B.  The
+        # generator still creates random weights, as do the other experiments;
+        # it does not download pretrained 7B checkpoint.
+        exp_name = "Llama-2-7B architecture (1 layer, seq_len=64)"
+        config.vocab_size = 8192
+        config.hidden_size = 4096
+        config.intermediate_size = 11008
+        config.num_hidden_layers = 1
+        config.num_attention_heads = 32
+        config.num_key_value_heads = 32
+        config.max_position_embeddings = 4096
+        config.rope_theta = 10000.0
+        simulation_seq_len = 64
+        apply_quantization = True
+
     else:
         raise ValueError(f"Unsupported experiment: {exp}")
 
@@ -161,12 +178,13 @@ def main():
     parser = argparse.ArgumentParser(description="NoCDAS Experiment Generator (LLaMA)")
     parser.add_argument(
         "--exp",
-        type=int,
-        choices=[1, 2, 3, 4],
-        default=4,
-        help="Choose the experiment: 1 (GQA Stress), 2 (Compute Bound), 3 (Pipeline), 4 (Full-Scale). Default: 4",
+        type=str,
+        choices=["1", "2", "3", "4", "real"],
+        default="4",
+        help="Choose the experiment: 1 (GQA Stress), 2 (Compute Bound), 3 (Pipeline), 4 (Full-Scale), real (Llama-2-7B architecture with 1 layer). Default: 4",
     )
     args = parser.parse_args()
+    exp = int(args.exp) if args.exp.isdigit() else args.exp
 
     model_file = OUT_DIR / "llama" / f"lm_transformer_llama_exp{args.exp}.txt"
     weight_file = OUT_DIR / "llama" / f"lm_weight_llama_exp{args.exp}.txt"
@@ -174,7 +192,7 @@ def main():
 
     os.makedirs(OUT_DIR / "llama", exist_ok=True)
 
-    config, SIMULATION_SEQ_LEN, apply_quantization, exp_name = build_config(args.exp)
+    config, SIMULATION_SEQ_LEN, apply_quantization, exp_name = build_config(exp)
 
     print(f"\n[INFO] Generating LLaMA architecture for: {exp_name}")
 

@@ -151,6 +151,22 @@ def build_config(exp):
         simulation_seq_len = 16
         apply_quantization = True
 
+    elif exp == "real":
+        print("[SETUP] Real-scale Mistral structure with 1 layer")
+        # Mistral 7B architectural dimensions, with depth reduced for simulation.
+        # The repository's 8192-token vocabulary is retained to keep generation
+        # and simulator input conventions consistent with the other workloads.
+        exp_name = "Real-scale Mistral structure (1 layer, seq_len=64)"
+        config.hidden_size = 4096
+        config.intermediate_size = 14336
+        config.num_hidden_layers = 1
+        config.num_attention_heads = 32
+        config.num_key_value_heads = 8
+        config.head_dim = config.hidden_size // config.num_attention_heads
+
+        simulation_seq_len = 64
+        apply_quantization = True
+
     else:
         raise ValueError(f"Unsupported experiment: {exp}")
 
@@ -166,12 +182,13 @@ def main():
     parser = argparse.ArgumentParser(description="NoCDAS Experiment Generator (Mistral)")
     parser.add_argument(
         "--exp",
-        type=int,
-        choices=[1, 2, 3, 4],
-        default=4,
+        type=str,
+        choices=["1", "2", "3", "4", "real"],
+        default="4",
         help="Choose the experiment: 1 (GQA Stress), 2 (Compute Bound), 3 (Pipeline), 4 (Full-Scale). Default: 4",
     )
     args = parser.parse_args()
+    exp = int(args.exp) if args.exp.isdigit() else args.exp
 
     model_file = OUT_DIR / "mistral" / f"lm_transformer_mistral_exp{args.exp}.txt"
     weight_file = OUT_DIR / "mistral" / f"lm_weight_mistral_exp{args.exp}.txt"
@@ -179,7 +196,7 @@ def main():
 
     os.makedirs(OUT_DIR / "mistral", exist_ok=True)
 
-    config, SIMULATION_SEQ_LEN, apply_quantization, exp_name = build_config(args.exp)
+    config, SIMULATION_SEQ_LEN, apply_quantization, exp_name = build_config(exp)
 
     print(f"\n[INFO] Generating Mistral architecture for: {exp_name}")
 
