@@ -20,6 +20,17 @@ MAC::MAC (int t_id, MACnet* t_net, int t_NI_id)
     tmpm = 0;
     request = -1;
     tmp_request = -1;
+    use_matmul_tiling = false;
+    matmul_activation_valid = false;
+    matmul_activation_row = -1;
+    matmul_requested_row = -1;
+    matmul_include_activation = true;
+    matmul_tile_start_task = -1;
+    matmul_tile_count = 0;
+    matmul_tile_weight_size = 0;
+    pending_acks = 0;
+    received_acks = 0;
+    matmul_tile_compute_cycles = 0;
     cached_score_row = -1;
     cached_score_head = -1;
 
@@ -177,6 +188,20 @@ void MAC::runOneStep()
                 request = routing_table.front();
                 tmp_request = request;
                 routing_table.pop_front();
+                if (use_matmul_tiling) {
+                    matmul_tile_start_task = request;
+                    matmul_requested_row = request / net->o_x;
+                    const int row_size = net->weight_table.empty()
+                        ? 0 : static_cast<int>(net->weight_table[0].size());
+                    assert(row_size > 0 && "Missing weight row for MatMul/Linear tile");
+                    matmul_tile_weight_size = row_size;
+                    matmul_tile_count = std::min(
+                        MAC_WEIGHT_SRAM_LIMIT / row_size,
+                        net->o_x - (request % net->o_x));
+                    assert(matmul_tile_count > 0 && "Weight SRAM cannot hold one weight row");
+                    matmul_include_activation =
+                        !matmul_activation_valid || matmul_activation_row != matmul_requested_row;
+                }
             }
             inject(0, dest_mem_id, 1, request, net->vcNetwork->NI_list[NI_id], packet_id + request, id);
             selfstatus = 2;
@@ -235,8 +260,32 @@ void MAC::runOneStep()
             {
                 ch_size = 1;
                 m_size = inbuffer[1];
-                infeature.assign(inbuffer.begin() + 2, inbuffer.begin() + 2 + m_size);
-                weight.assign(inbuffer.begin() + 2 + m_size, inbuffer.end()); //w + b
+                if (use_matmul_tiling && inbuffer[1] < 0) {
+                    // Tiled FC response:
+                    // [fn, -input_size, first_task, tile_count, row_size,
+                    //  activation (optional), weight rows...]
+                    m_size = -static_cast<int>(inbuffer[1]);
+                    matmul_tile_start_task = static_cast<int>(inbuffer[2]);
+                    matmul_tile_count = static_cast<int>(inbuffer[3]);
+                    matmul_tile_weight_size = static_cast<int>(inbuffer[4]);
+                    const size_t activation_offset = 5;
+                    const size_t weight_offset = activation_offset +
+                        (matmul_include_activation ? static_cast<size_t>(m_size) : 0);
+                    if (matmul_include_activation) {
+                        infeature.assign(inbuffer.begin() + activation_offset,
+                                         inbuffer.begin() + weight_offset);
+                        matmul_activation_valid = true;
+                        matmul_activation_row = matmul_tile_start_task / net->o_x;
+                    } else {
+                        assert(matmul_activation_valid &&
+                               matmul_activation_row == matmul_tile_start_task / net->o_x &&
+                               "Missing activation for weight tile");
+                    }
+                    weight.assign(inbuffer.begin() + weight_offset, inbuffer.end());
+                } else {
+                    infeature.assign(inbuffer.begin() + 2, inbuffer.begin() + 2 + m_size);
+                    weight.assign(inbuffer.begin() + 2 + m_size, inbuffer.end()); //w + b
+                }
             }
             else if (fn == 8 || fn == 12)           // max or avg pooling [fn] [map size] [i]
             {
@@ -253,6 +302,26 @@ void MAC::runOneStep()
                     if (fn == SWIGLU || fn == GEGLU) {
                         // SwiGLU: the input size is 2 * m_size (Gate + Up), no weights
                         infeature.assign(inbuffer.begin() + 2, inbuffer.begin() + 4);
+                    } else if (fn == MATMUL && use_matmul_tiling && inbuffer[1] < 0) {
+                        // Tiled MatMul response uses the same layout as tiled FC.
+                        m_size = -static_cast<int>(inbuffer[1]);
+                        matmul_tile_start_task = static_cast<int>(inbuffer[2]);
+                        matmul_tile_count = static_cast<int>(inbuffer[3]);
+                        matmul_tile_weight_size = static_cast<int>(inbuffer[4]);
+                        const size_t activation_offset = 5;
+                        const size_t weight_offset = activation_offset +
+                            (matmul_include_activation ? static_cast<size_t>(m_size) : 0);
+                        if (matmul_include_activation) {
+                            infeature.assign(inbuffer.begin() + activation_offset,
+                                             inbuffer.begin() + weight_offset);
+                            matmul_activation_valid = true;
+                            matmul_activation_row = matmul_tile_start_task / net->o_x;
+                        } else {
+                            assert(matmul_activation_valid &&
+                                   matmul_activation_row == matmul_tile_start_task / net->o_x &&
+                                   "Missing activation for weight tile");
+                        }
+                        weight.assign(inbuffer.begin() + weight_offset, inbuffer.end());
                     } else {
                         // MatMul, LayerNorm, Add, RMSNorm
                         infeature.assign(inbuffer.begin() + 2, inbuffer.begin() + 2 + m_size);
@@ -274,6 +343,20 @@ void MAC::runOneStep()
                     m_size = inbuffer[1] / inbuffer[3]; // query head dimension
                     infeature.assign(inbuffer.begin() + 9, inbuffer.begin() + 9 + m_size);
                 }
+            }
+
+            if (use_matmul_tiling && (fn == MATMUL || (fn >= 4 && fn <= 7)) &&
+                inbuffer[1] < 0) {
+                assert(matmul_tile_count > 0 && "Invalid MatMul/Linear tile count");
+                assert(matmul_tile_weight_size > 0 && "Invalid MatMul/Linear tile row size");
+                assert(weight.size() == static_cast<size_t>(matmul_tile_count * matmul_tile_weight_size) &&
+                       "Weight tile payload size mismatch");
+                assert(infeature.size() == static_cast<size_t>(m_size) &&
+                       "Activation tile payload size mismatch");
+                assert(weight.size() <= MAC_WEIGHT_SRAM_LIMIT &&
+                       "Weight tile exceeds MAC weight SRAM limit");
+                assert(infeature.size() <= MAC_INPUT_SRAM_LIMIT &&
+                       "Activation tile exceeds MAC input SRAM limit");
             }
 
             assert(infeature.size() <= MAC_INPUT_SRAM_LIMIT && "Input feature size exceeds MAC input SRAM limit");
@@ -316,8 +399,13 @@ void MAC::runOneStep()
             }
             else if (fn >= 4 && fn <= 7)                    // FC
             {
-                for(int j=0; j < m_size; j++) { outfeature += infeature[j] * weight[j]; }
-                outfeature += weight[m_size];
+                if (use_matmul_tiling && matmul_tile_count > 0) {
+                    pending_acks = matmul_tile_count;
+                } else {
+                    for(int j=0; j < m_size; j++) { outfeature += infeature[j] * weight[j]; }
+                    outfeature += weight[m_size];
+                    pending_acks = 1;
+                }
             }
             else if (fn == 8)                               // max pooling
             {
@@ -362,11 +450,16 @@ void MAC::runOneStep()
             else if (fn >= MATMUL && fn <= GEGLU)                                               // Operazioni Transformer
             {
                 if (fn == MATMUL) {                                                                 // MatMul
-                    for(int j=0; j < m_size; j++) { outfeature += infeature[j] * weight[j]; }
+                    if (use_matmul_tiling && matmul_tile_count > 0) {
+                        pending_acks = matmul_tile_count;
+                    } else {
+                        for(int j=0; j < m_size; j++) { outfeature += infeature[j] * weight[j]; }
 
-                    #if USE_BIAS
-                        outfeature += weight[m_size];
-                    #endif
+                        #if USE_BIAS
+                            outfeature += weight[m_size];
+                        #endif
+                        pending_acks = 1;
+                    }
                 } 
                 else if (fn == LAYERNORM) {                                                         // LayerNorm
                     // infeature = [mean, var, x_i, gamma, beta]
@@ -631,7 +724,11 @@ void MAC::runOneStep()
 
                 if (fn == MATMUL) { 
                     // MatMul: overhead -> systolic array initialization + active cycles
-                    int active_cycles = (m_size / PE_NUM_OP) + 1;
+                    int operation_count = m_size;
+                    if (use_matmul_tiling && matmul_tile_count > 0) {
+                        operation_count *= matmul_tile_count;
+                    }
+                    int active_cycles = (operation_count / PE_NUM_OP) + 1;
                     calctime = (SYSTOLIC_DIM + active_cycles) * MAC_LATENCY;
                 } 
                 else if (fn == LAYERNORM) { 
@@ -678,9 +775,28 @@ void MAC::runOneStep()
 
                 selfstatus = 4; // ready for output
                 pecycle = cycles + calctime; // sync cycles
+                matmul_tile_compute_cycles = calctime;
 
-                // Send the computed result onto the NoC
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                // Send one result per output task. The tile pays one compute
+                // startup, but still produces one architectural output each.
+                if (use_matmul_tiling && fn == MATMUL && matmul_tile_count > 0) {
+                    const int row_size = matmul_tile_weight_size;
+                    for (int tile_idx = 0; tile_idx < matmul_tile_count; tile_idx++) {
+                        outfeature = 0.0f;
+                        const int weight_offset = tile_idx * row_size;
+                        for (int j = 0; j < m_size; j++) {
+                            outfeature += infeature[j] * weight[weight_offset + j];
+                        }
+                        #if USE_BIAS
+                            if (row_size > m_size) outfeature += weight[weight_offset + m_size];
+                        #endif
+                        tmpm = matmul_tile_start_task + tile_idx;
+                        inject(2, dest_mem_id, 1, outfeature,
+                               net->vcNetwork->NI_list[NI_id], packet_id + tmpm, id);
+                    }
+                } else {
+                    inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                }
 
 #ifdef Countlatency
                 int stats1 = (packet_id + tmp_request)*3 + 2;
@@ -691,7 +807,11 @@ void MAC::runOneStep()
                 return;
             }
 
-            int calctime = (ch_size * m_size / PE_NUM_OP + 1) * PE_FREQ_RATIO;  //25, 10
+            int operation_count = ch_size * m_size;
+            if (use_matmul_tiling && (fn >= 4 && fn <= 7) && matmul_tile_count > 0) {
+                operation_count *= matmul_tile_count;
+            }
+            int calctime = (operation_count / PE_NUM_OP + 1) * PE_FREQ_RATIO;  //25, 10
             //int calctime = 25;
 
             if (current_chunk < total_chunks - 1) {
@@ -739,7 +859,23 @@ void MAC::runOneStep()
 
             // inject
 #ifndef newpooling
-            inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+            if (use_matmul_tiling && (fn >= 4 && fn <= 7) && matmul_tile_count > 0) {
+                const int row_size = matmul_tile_weight_size;
+                for (int tile_idx = 0; tile_idx < matmul_tile_count; tile_idx++) {
+                    outfeature = 0.0f;
+                    const int weight_offset = tile_idx * row_size;
+                    for (int j = 0; j < m_size; j++) {
+                        outfeature += infeature[j] * weight[weight_offset + j];
+                    }
+                    // Dense layers in the legacy model always carry a bias.
+                    if (row_size > m_size) outfeature += weight[weight_offset + m_size];
+                    tmpm = matmul_tile_start_task + tile_idx;
+                    inject(2, dest_mem_id, 1, outfeature,
+                           net->vcNetwork->NI_list[NI_id], packet_id + tmpm, id);
+                }
+            } else {
+                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+            }
 #ifdef Countlatency
             //statistics
             stats1 = (packet_id + tmp_request)*3 + 2;
@@ -788,9 +924,13 @@ void MAC::runOneStep()
         }
         else if(selfstatus == 4){
 #ifndef only3type
-            if(this->send == 2) // get confirmation
+            if((this->use_matmul_tiling && this->pending_acks > 0 &&
+                this->received_acks >= this->pending_acks) ||
+               (!this->use_matmul_tiling && this->send == 2)) // tile/result confirmation
             {
                 this->send = 0;
+                this->pending_acks = 0;
+                this->received_acks = 0;
                 if(this->routing_table.size()==0)
                 {
                     this->selfstatus = 5;
@@ -800,11 +940,24 @@ void MAC::runOneStep()
                     this->selfstatus = 0;               // back to initial state
                 }
                 //cout << "from mac " << this->id << " output " << this->outfeature << " " << selfstatus << endl;
+                const int next_row = this->routing_table.empty() ? -1 :
+                    this->routing_table.front() / net->o_x;
+                const int current_row = this->matmul_tile_start_task / net->o_x;
+                const bool preserve_activation =
+                    this->use_matmul_tiling && this->matmul_activation_valid &&
+                    next_row == current_row;
                 this->weight.clear();
-                this->infeature.clear();
+                if (!preserve_activation) {
+                    this->infeature.clear();
+                }
                 this->inbuffer.clear();
                 this->outfeature = 0.0;
                 this->outfeature_vec.clear();
+                if (this->use_matmul_tiling && this->matmul_activation_valid &&
+                    next_row != current_row) {
+                    this->matmul_activation_valid = false;
+                    this->matmul_activation_row = -1;
+                }
 #ifdef newpooling
             this->npoolflag = 0;
             this->n_tmpch = -1;

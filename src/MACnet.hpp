@@ -55,6 +55,7 @@ public:
 
 	deque< deque< int > > mapping_table;
 	void mapping(int neuronnum);
+	void matmul_tile_mapping(int neuronnum);
 	void ymapping(int neuronnum);
 	void rmapping(int neuronnum);
 

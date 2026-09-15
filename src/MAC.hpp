@@ -75,6 +75,20 @@ class MAC
 	int request;
 	int tmp_request;
 
+	// Baseline MatMul/Linear tile state. A tile reuses one activation vector
+	// across several consecutive output rows.
+	bool use_matmul_tiling;
+	bool matmul_activation_valid;
+	int matmul_activation_row;
+	int matmul_requested_row;
+	bool matmul_include_activation;
+	int matmul_tile_start_task;
+	int matmul_tile_count;
+	int matmul_tile_weight_size;
+	int pending_acks;
+	int received_acks;
+	int matmul_tile_compute_cycles;
+
 	int send;
 	int NI_id;
 	std::vector<float> weight;

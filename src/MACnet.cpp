@@ -228,6 +228,38 @@ void MACnet::mapping(int neuronnum){
     }
 }
 
+void MACnet::matmul_tile_mapping(int neuronnum){
+    this->mapping_table.clear();
+    this->mapping_table.resize(macNum);
+
+    const bool dense_layer = this->cnnmodel->all_layer_type[c_layer] == 'f';
+    const int input_size = dense_layer ? this->in_x : this->in_x;
+    const int output_size = this->o_x;
+    const int activation_rows = dense_layer ? 1 : this->o_y;
+    const int row_size = this->weight_table.empty()
+        ? 0 : static_cast<int>(this->weight_table[0].size());
+    assert(row_size > 0 && "Cannot tile MatMul/Linear without weight rows");
+    const int rows_per_tile = MAC_WEIGHT_SRAM_LIMIT / row_size;
+    assert(rows_per_tile > 0 && "Weight SRAM cannot hold one MatMul/Linear row");
+
+    std::vector<int> available_pes;
+    for (int pe = 0; pe < macNum; ++pe) {
+        if (!contains(dest_list, pe)) available_pes.push_back(pe);
+    }
+    assert(!available_pes.empty() && "No PE available for MatMul/Linear tiles");
+
+    // Keep all output tiles for one activation row on the same PE. The first
+    // tile transfers the activation; later tiles only replace the weights.
+    for (int row = 0; row < activation_rows; ++row) {
+        const int pe = available_pes[row % available_pes.size()];
+        for (int col = 0; col < output_size; col += rows_per_tile) {
+            mapping_table[pe].push_back(row * output_size + col);
+        }
+    }
+    (void)input_size;
+    (void)neuronnum;
+}
+
 void MACnet::ymapping(int neuronnum){
     this->mapping_table.clear();
     this->mapping_table.resize(macNum);
@@ -621,15 +653,28 @@ void MACnet::checkStatus()
             this->mapping(task_num); 
         }
 #else
-    #ifdef rowmapping
-        this->mapping(task_num);
-    #endif
-    #ifdef colmapping
-        this->ymapping(task_num);
-    #endif
-    #ifdef randmapping
-        this->rmapping(task_num);
-    #endif
+	    if (this->cnnmodel->all_layer_type[c_layer] == 'm' ||
+	        this->cnnmodel->all_layer_type[c_layer] == 'f') {
+	        this->matmul_tile_mapping(task_num);
+	    }
+	#ifdef rowmapping
+	        if (this->cnnmodel->all_layer_type[c_layer] != 'm' &&
+	            this->cnnmodel->all_layer_type[c_layer] != 'f') {
+	            this->mapping(task_num);
+	        }
+	#endif
+	#ifdef colmapping
+	        if (this->cnnmodel->all_layer_type[c_layer] != 'm' &&
+	            this->cnnmodel->all_layer_type[c_layer] != 'f') {
+	            this->ymapping(task_num);
+	        }
+	#endif
+	#ifdef randmapping
+	        if (this->cnnmodel->all_layer_type[c_layer] != 'm' &&
+	            this->cnnmodel->all_layer_type[c_layer] != 'f') {
+	            this->rmapping(task_num);
+	        }
+	#endif
 #endif
 
         for(int i=0; i<macNum; i++)
@@ -646,6 +691,19 @@ void MACnet::checkStatus()
                 this->MAC_list[i]->routing_table.assign(mapping_table[i].begin(),mapping_table[i].end());
             }
             this->MAC_list[i]->local_sram_usage = 0;
+#ifdef cNoC_MODE
+			this->MAC_list[i]->use_matmul_tiling = false;
+#else
+			this->MAC_list[i]->use_matmul_tiling =
+				(this->cnnmodel->all_layer_type[c_layer] == 'm' ||
+				 this->cnnmodel->all_layer_type[c_layer] == 'f');
+#endif
+			this->MAC_list[i]->matmul_activation_valid = false;
+			this->MAC_list[i]->matmul_activation_row = -1;
+			this->MAC_list[i]->matmul_include_activation = true;
+            this->MAC_list[i]->pending_acks = 0;
+            this->MAC_list[i]->received_acks = 0;
+            this->MAC_list[i]->matmul_tile_compute_cycles = 0;
             this->MAC_list[i]->kv_cache.clear(); 
             this->MAC_list[i]->cached_score_row = -1;
             this->MAC_list[i]->cached_score_head = -1;
@@ -861,20 +919,8 @@ void MACnet::runOneStep()
                 int y = tmpPacket->message.sequence_id;
                 int p_offset = tmpPacket->message.psum_offset;
                 
-                if (tmpPacket->message.compute_op == ATTENTION) {                      
-                    int n_heads = tmpPacket->message.n_heads;
-                    int head_dim = o_x / n_heads;
-
-                    for (int h = 0; h < n_heads; h++) {
-                        double final_denominator = tmpPacket->message.running_sum[h];
-                        double epsilon = 1e-9;
-                        if (final_denominator < epsilon) final_denominator = epsilon;
-
-                        for(size_t d = 0; d < head_dim; d++) { 
-                            tmpPacket->message.data[p_offset + (h * head_dim) + d] /= final_denominator;
-                        }
-                    }
-                }
+                // The last reduction router performs the final softmax
+                // normalization.  Do not divide the result again at memory.
                 
                 // Saving data by extracting from 'data'
                 for(size_t k = 0; k < o_x; k++) {
@@ -1028,12 +1074,33 @@ void MACnet::runOneStep()
                     tmpMAC->tmpm  = tmpMAC->request; 
                     tmpMAC->npoolflag = 0;
                     tmpMAC->inbuffer.clear();
-                    tmpMAC->inbuffer.push_back(o_fn);
-                    tmpMAC->inbuffer.push_back(w_x * w_y);
-                    tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), this->input_table[0].begin(), this->input_table[0].end());
-                    tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(),this->weight_table[tmpMAC->tmpm].begin(), this->weight_table[tmpMAC->tmpm].end()); 
+                    if (tmpMAC->use_matmul_tiling) {
+                        const int row_size = this->weight_table[0].size();
+                        const int tile_count = tmpMAC->matmul_tile_count;
+                        const bool include_activation = !tmpMAC->matmul_activation_valid;
+                        tmpMAC->inbuffer.push_back(o_fn);
+                        tmpMAC->inbuffer.push_back(-w_x * w_y);
+                        tmpMAC->inbuffer.push_back(tmpMAC->request);
+                        tmpMAC->inbuffer.push_back(tile_count);
+                        tmpMAC->inbuffer.push_back(row_size);
+                        if (include_activation) {
+                            tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(),
+                                this->input_table[0].begin(), this->input_table[0].end());
+                        }
+                        for (int tile_idx = 0; tile_idx < tile_count; ++tile_idx) {
+                            const int row = tmpMAC->request + tile_idx;
+                            tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(),
+                                this->weight_table[row].begin(), this->weight_table[row].end());
+                        }
+                        tmpMAC->matmul_include_activation = include_activation;
+                    } else {
+                        tmpMAC->inbuffer.push_back(o_fn);
+                        tmpMAC->inbuffer.push_back(w_x * w_y);
+                        tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), this->input_table[0].begin(), this->input_table[0].end());
+                        tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(),this->weight_table[tmpMAC->tmpm].begin(), this->weight_table[tmpMAC->tmpm].end());
+                    }
                     
-                    MAC_list[mem_id]->pecycle = cycles + ceil((w_x * w_y * 2 + 1) * MEM_read_delay) + CACHE_DELAY;
+                    MAC_list[mem_id]->pecycle = cycles + ceil(tmpMAC->inbuffer.size() * MEM_read_delay) + CACHE_DELAY;
                     MAC_list[mem_id]->inject(1,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
                 }
             }
@@ -1054,10 +1121,35 @@ void MACnet::runOneStep()
                     int tmpx = tmpMAC->tmpm % o_x;
 
                     if (o_fn == MATMUL) { 
-                        tmpMAC->inbuffer.push_back(o_fn);
-                        tmpMAC->inbuffer.push_back(in_x);
-                        tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), this->input_table[0].begin() + tmpy*in_x, this->input_table[0].begin() + tmpy*in_x + in_x); 
-                        tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), this->weight_table[tmpx].begin(), this->weight_table[tmpx].end()); 
+                        if (tmpMAC->use_matmul_tiling) {
+                            const int row_size = this->weight_table[0].size();
+                            const int tile_count = tmpMAC->matmul_tile_count;
+                            const bool include_activation = !tmpMAC->matmul_activation_valid;
+                            tmpMAC->inbuffer.push_back(o_fn);
+                            tmpMAC->inbuffer.push_back(-in_x);
+                            tmpMAC->inbuffer.push_back(tmpMAC->request);
+                            tmpMAC->inbuffer.push_back(tile_count);
+                            tmpMAC->inbuffer.push_back(row_size);
+                            if (include_activation) {
+                                tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(),
+                                    this->input_table[0].begin() + tmpy*in_x,
+                                    this->input_table[0].begin() + tmpy*in_x + in_x);
+                            }
+                            for (int tile_idx = 0; tile_idx < tile_count; ++tile_idx) {
+                                // For Transformer MatMul, the task id is
+                                // row * output_size + output_col. Weight
+                                // rows are indexed only by output_col.
+                                const int row = tmpx + tile_idx;
+                                tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(),
+                                    this->weight_table[row].begin(), this->weight_table[row].end());
+                            }
+                            tmpMAC->matmul_include_activation = include_activation;
+                        } else {
+                            tmpMAC->inbuffer.push_back(o_fn);
+                            tmpMAC->inbuffer.push_back(in_x);
+                            tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), this->input_table[0].begin() + tmpy*in_x, this->input_table[0].begin() + tmpy*in_x + in_x);
+                            tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), this->weight_table[tmpx].begin(), this->weight_table[tmpx].end());
+                        }
                     }
                     else if (o_fn == LAYERNORM) { 
                         tmpMAC->inbuffer.push_back(o_fn);
@@ -1248,7 +1340,11 @@ void MACnet::runOneStep()
 #ifndef only3type
                 if(tmpMAC->selfstatus == 4) {
                     if(tmpMAC->send == 1) {
-                        this->output_table[tmpMAC->tmpch][tmpMAC->tmpm] = tmpMAC->outfeature;
+                        // The packet carries the output index.  This matters
+                        // for tiled Linear layers, which emit several result
+                        // packets while tmpMAC->tmpm advances through a tile.
+                        this->output_table[tmpPacket->message.data[1]][tmpPacket->message.data[2]] =
+                            tmpPacket->message.data[0];
                         MAC_list[mem_id]->inject(3,src,1,2,vcNetwork->NI_list[mem_id],pid, src_mac);
                     }
                 }
@@ -1341,7 +1437,11 @@ void MACnet::runOneStep()
             }
             src_mac = tmpPacket->message.mac_id;
             tmpMAC = MAC_list[src_mac];
-            tmpMAC->send = 2;
+            if (tmpMAC->use_matmul_tiling && tmpMAC->pending_acks > 0) {
+                tmpMAC->received_acks++;
+            } else {
+                tmpMAC->send = 2;
+            }
             it = tmpNI->packet_buffer_out[1].erase(it);
             Packet::release(tmpPacket);
         }
