@@ -248,7 +248,7 @@ int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
 
     int payload_size = t_flit->get_payload_size();
     
-    if (payload_size > 0) {
+    if (payload_size > 0 || opcode == ATTENTION) {
         switch(opcode) {
             case MATMUL:
                 // MATMUL (15) and LINEAR (0) share the exact same mathematical logic 
@@ -330,7 +330,9 @@ int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
             }
             case ATTENTION:
             {
-                if (t_flit->type != 0 && t_flit->type != 10) break;
+                // The packet data and partial sums are complete only at the
+                // tail.  Earlier flits establish the VC but do not compute.
+                if (t_flit->type != 1 && t_flit->type != 10) break;
                 if (local_kv_cache.empty()) break;
 
                 int q_dim = t_flit->packet->message.data.size() - t_flit->packet->message.psum_offset;
@@ -352,9 +354,16 @@ int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
                 
                 if (router_idx == -1) break;
 
-                int current_query_y = t_flit->packet->message.sequence_id;
-                bool is_last_reduction_node = (router_idx == N - 1);
+                // The running reduction state is updated by the previous
+                // router when its tail flit was processed.  The head flit may
+                // have arrived earlier, so refresh the state from the packet
+                // at the actual computation point.
+                if (t_flit->packet->message.running_max.size() == static_cast<size_t>(n_heads)) {
+                    vc_state.running_max = t_flit->packet->message.running_max;
+                    vc_state.running_sum = t_flit->packet->message.running_sum;
+                }
 
+                int current_query_y = t_flit->packet->message.sequence_id;
                 const int SINK_TOKENS = 4;
                 int floats_per_token = k_dim * 2;
                 int max_tokens_in_sram = ROUTER_SRAM_LIMIT / floats_per_token;
@@ -413,7 +422,11 @@ int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
                             dot_product += (double)t_flit->packet->message.data[(h * head_dim) + d] * (double)local_kv_cache[k_offset + d];
                         }
 
-                        dot_product /= std::sqrt((double)head_dim);
+                        if (attention_head_dim != head_dim) {
+                            attention_head_dim = head_dim;
+                            attention_score_scale = 1.0 / std::sqrt((double)head_dim);
+                        }
+                        dot_product *= attention_score_scale;
                         local_scores[i] = dot_product;
                         if (dot_product > local_max) local_max = dot_product;
                     }
@@ -445,10 +458,6 @@ int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
                         
                         double final_o = current_o + local_v_contribution;
                         
-                        if (is_last_reduction_node && l_new > 0.0) {
-                            final_o /= l_new;
-                        }
-                        
                         t_flit->packet->message.data[target_idx] = (float)final_o;
                     }
                     
@@ -469,6 +478,72 @@ int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
         vc_state.reset();
     }
     return matmul_macs;
+}
+
+int VCRouter::computeAttention(Flit* t_flit) {
+    if (t_flit->type != 1 && t_flit->type != 10) {
+        return 1;
+    }
+
+    const int this_router_id = id[0] * X_NUM + id[1];
+    const int path_length = static_cast<int>(t_flit->packet->message.routing_path.size()) - 1;
+    int router_idx = -1;
+    for (int r = 0; r < path_length; ++r) {
+        if (t_flit->packet->message.routing_path[r] == this_router_id) {
+            router_idx = r;
+            break;
+        }
+    }
+    if (router_idx < 0) return 1;
+
+    const int q_dim = static_cast<int>(t_flit->packet->message.data.size()) -
+                      t_flit->packet->message.psum_offset;
+    const int k_dim = t_flit->packet->message.k_dim > 0
+        ? t_flit->packet->message.k_dim : q_dim;
+    const int n_heads = std::max(1, t_flit->packet->message.n_heads);
+    const int local_tokens = k_dim > 0
+        ? static_cast<int>(local_kv_cache.size()) / (2 * k_dim) : 0;
+
+    int delay = 1;
+    if (local_tokens > 0) {
+        const int macs = local_tokens * q_dim * 2 +
+                         3 * local_tokens * n_heads;
+        const int mac_cycles = static_cast<int>(std::ceil(
+            macs / static_cast<double>(ROUTER_MACS_PER_CYCLE)));
+        const int exp_ops = n_heads * (local_tokens + 1);
+
+        // This is the work performed by this router's local reduction.  The
+        // score scale is a configured multiply; final normalization is a
+        // single vector operation at the last reduction router.
+        delay = mac_cycles * MAC_LATENCY + exp_ops * EXP_LATENCY;
+    }
+
+    if (router_idx == path_length - 1) {
+        const double epsilon = 1e-9;
+        const size_t begin = static_cast<size_t>(t_flit->packet->message.psum_offset);
+        const size_t end = t_flit->packet->message.data.size();
+        for (int h = 0; h < n_heads; ++h) {
+            const double denom = h < static_cast<int>(t_flit->packet->message.running_sum.size())
+                ? std::max(epsilon, t_flit->packet->message.running_sum[h]) : epsilon;
+            const size_t h_begin = begin + static_cast<size_t>(h) * (q_dim / n_heads);
+            const size_t h_end = std::min(end, h_begin + static_cast<size_t>(q_dim / n_heads));
+            for (size_t p = h_begin; p < h_end; ++p) {
+                t_flit->packet->message.data[p] =
+                    static_cast<float>(t_flit->packet->message.data[p] / denom);
+            }
+        }
+        delay += DIV_LATENCY +
+                 static_cast<int>(std::ceil(q_dim / static_cast<double>(ROUTER_MACS_PER_CYCLE))) *
+                 MAC_LATENCY;
+    }
+
+    // The score scale 1/sqrt(head_dim) is common to the whole reduction.
+    // Charge its SFU latency once at the first reduction router.
+    if (router_idx == 0) {
+        delay += SQRT_LATENCY;
+    }
+
+    return delay;
 }
 
 void VCRouter::vcRequest(){  
@@ -497,7 +572,9 @@ void VCRouter::outPortDequeue(){
                 }
             }
             
-            if (flit->packet->message.type == 5 && flit->packet->message.compute_op == ATTENTION) {
+            if (flit->packet->message.type == 5 &&
+                flit->packet->message.compute_op == ATTENTION &&
+                (flit->type == 1 || flit->type == 10)) {
                 int this_router_id = id[0] * X_NUM + id[1];
                 int N = flit->packet->message.routing_path.size() - 1;
                 int router_idx = -1;
@@ -571,50 +648,9 @@ void VCRouter::outPortDequeue(){
                     compute_delay = ADD_LATENCY;
                 }
                 else if (opcode == ATTENTION) {
-                    // Softmax and projections are only completed when the tail flit arrives.
-                    if (flit->type == 1 || flit->type == 10) {
-                        
-                        // Calculate the number of local tokens currently in the router's cache.
-                        // Each cached token stores K and V with k_dim elements each;
-                        // q_dim would overestimate the token footprint for GQA.
-                        int q_dim = flit->packet->message.data.size() - flit->packet->message.psum_offset;
-                        int k_dim = (flit->packet->message.k_dim > 0)
-                                  ? flit->packet->message.k_dim : q_dim;
-                        int n_heads = (flit->packet->message.n_heads > 0)
-                                    ? flit->packet->message.n_heads : 1;
-                        int num_local_tokens = 0;
-                        if (k_dim > 0) {
-                            num_local_tokens = local_kv_cache.size() / (k_dim * 2);
-                        }
-
-                        // A router without local KV data only forwards the tail flit.
-                        // It does not execute attention or the associated SFU operations.
-                        if (num_local_tokens == 0) {
-                            compute_delay = 1;
-                        } else {
-                            // One packet performs all query heads at this router. Its MAC work is
-                            // therefore q_dim * local_tokens, while scalar softmax work and exp
-                            // work are repeated for every query head.
-                            int dot_product_macs = num_local_tokens * q_dim; // Q * K^T
-                            int value_projection_macs = num_local_tokens * q_dim; // softmax * V
-                            int softmax_scalar_ops = 3 * num_local_tokens * n_heads;
-                            int mac_cycles = static_cast<int>(std::ceil(
-                                (dot_product_macs + value_projection_macs + softmax_scalar_ops)
-                                / static_cast<double>(ROUTER_MACS_PER_CYCLE)));
-                            int exp_ops = n_heads * (num_local_tokens + 1);
-
-                            // Latency = pipelined MAC issue plus scalar SFU operations.
-                            compute_delay = mac_cycles * MAC_LATENCY
-                                            + (exp_ops * EXP_LATENCY)
-                                            + DIV_LATENCY
-                                            + SQRT_LATENCY;
-                        }
-                                        
-                    } else {
-                        // Intermediate flits (Head, Body) pass through the router in a pipelined 
-                        // fashion while the SFU is accumulating data, so they only cost 1 cycle.
-                        compute_delay = 1; 
-                    }
+                    // The same tail event that updates the packet also pays
+                    // the local reduction and, at the final node, normalization.
+                    compute_delay = computeAttention(flit);
                 } else {
                     compute_delay = MAC_LATENCY; 
                 }

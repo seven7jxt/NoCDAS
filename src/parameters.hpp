@@ -61,9 +61,9 @@
 /******************************/
 // NoC Node configuration macros used in the manuscript
 // #define MemNode2  						// 2 MC cores (for 4*4 NoC)
-// #define MemNode8  						// 8 MC cores (for 8*8 NoC)
+#define MemNode8  						// 8 MC cores (for 8*8 NoC)
 // #define MemNode18  						// 18 MC cores (for 12*12 NoC)
-#define MemNode32  						// 32 MC cores (for 16*16 NoC)
+// #define MemNode32  						// 32 MC cores (for 16*16 NoC)
 
 //#define MemNode5  						// 5 MC cores (for 6*6 NoC)
 //#define MemNode13  						// 13 MC cores (for 10*10 NoC)
@@ -139,8 +139,8 @@
 
 //////////////////////////////////
 #define FREQUENCY 1 					// GHz (NoC clock frequency)
-// #define PE_NUM_OP 25   					// 25 OP per PE cycle (define the MAC array size in PE)
-#define PE_NUM_OP (25 * QUANT_MULTIPLIER)
+#define PE_NUM_OP 320   				// 320 OP per PE cycle (define the MAC array size in PE)
+// #define PE_NUM_OP (25 * QUANT_MULTIPLIER)
 #define PE_FREQ_RATIO 10 				// NoC freq / PE freq, PE 100MHz -> 10 (define the nodes (PE/MC) clock frequency)
 // #define MEM_read_delay 0.3125 			// delay for 2byte / 1 data (define the cache data transfer speed)
 #define MEM_read_delay (0.3125 / QUANT_MULTIPLIER)
@@ -160,6 +160,16 @@
 #define DISTRIBUTION_NUM 20				// threshold for counting end-to end packet delay is good (<20 is good)
 
 #define PRINT 100000000 				// define the prining steps in clock cycle
+
+// Router MatMul/Linear throughput in NoC cycles; override with compiler -D flags.
+#ifndef ROUTER_MACS_PER_CYCLE
+#define ROUTER_MACS_PER_CYCLE (1.0 * PE_NUM_OP / PE_FREQ_RATIO)
+#endif
+// Aggregate SRAM data bits per NoC cycle: weight reads and distribution writes.
+// Attention read timing retains its existing model.
+#ifndef ROUTER_SRAM_WIDTH
+#define ROUTER_SRAM_WIDTH (FLIT_LENGTH * 8)
+#endif
 
 // Neural Network Architectural Parameters
 #define USE_BIAS 0      // 1: Enable in-transit Bias initialization (cNoC Way 3). 0: Bias-less models (e.g., LLaMA)
