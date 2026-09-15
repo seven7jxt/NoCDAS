@@ -81,7 +81,8 @@ public:
   std::vector<int> assigned_tasks;
   
   // Multi-way Function Unit (MFU) functions
-  void computeInTransit(Flit* t_flit, int port_idx);
+  // Returns the number of MatMul/Linear MACs actually executed for this flit.
+  int computeInTransit(Flit* t_flit, int port_idx);
   void processDistributionPacket(Flit* t_flit);
 
   // Main components

@@ -9,6 +9,11 @@
 #include <cmath>
 #include <algorithm>
 
+static_assert(ROUTER_MACS_PER_CYCLE > 0, "Router MAC throughput must be positive");
+static_assert(ROUTER_SRAM_WIDTH > 0 &&
+              ROUTER_SRAM_WIDTH % (DATA_BYTES * 8) == 0,
+              "Router SRAM interface must hold a whole number of data elements");
+
 VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth)
 {
     id[0] = t_id[0];  
@@ -198,8 +203,9 @@ void VCRouter::processDistributionPacket(Flit* t_flit) {
     }
 }
 
-void VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
+int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
     int this_router_id = id[0] * X_NUM + id[1];
+    int matmul_macs = 0;
 
     // Avoid redundant executions of the same flit if it passes multiple times
     // if (std::find(t_flit->computed_routers.begin(), t_flit->computed_routers.end(), this_router_id) != t_flit->computed_routers.end()) {
@@ -209,7 +215,7 @@ void VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
 
     // Avoid redundant executions of the same flit if it passes multiple times
     if (t_flit->computed_routers[this_router_id]) {
-        return;
+        return 0;
     }
     t_flit->computed_routers[this_router_id] = true;
 
@@ -237,7 +243,7 @@ void VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
     if (vc_state.is_active) {
         opcode = vc_state.compute_op;
     } else {
-        return;
+        return 0;
     }
 
     int payload_size = t_flit->get_payload_size();
@@ -270,6 +276,7 @@ void VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
                             int w_offset = (t * chunk_row_size) + (input_idx - chunk_offset); 
                             if (w_offset < local_weights.size()) {
                                 local_accum += t_flit->get_data(i) * local_weights[w_offset];
+                                ++matmul_macs;
                             }
                         }
                     }
@@ -461,6 +468,7 @@ void VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
     if (t_flit->type == 1 || t_flit->type == 10) {
         vc_state.reset();
     }
+    return matmul_macs;
 }
 
 void VCRouter::vcRequest(){  
@@ -529,18 +537,34 @@ void VCRouter::outPortDequeue(){
                 }
 
                 if (is_target) {
+                    if (!flit->computed_routers.test(this_router)) {
+                        const int sram_elements_per_cycle = ROUTER_SRAM_WIDTH / (DATA_BYTES * 8);
+                        compute_delay = (flit->get_payload_size() + sram_elements_per_cycle - 1)
+                                        / sram_elements_per_cycle;
+                    }
                     processDistributionPacket(flit);
                 }
                 
-                mfu_occupied_until = cycles + 1; 
-                compute_delay = 1;
+                compute_delay = std::max(1, compute_delay);
+                mfu_occupied_until = cycles + compute_delay;
             }
             else if (flit->packet->message.type == 5) {
-                computeInTransit(flit, i); 
+                const int matmul_macs = computeInTransit(flit, i);
                 
                 int opcode = flit->packet->message.compute_op;
                 
-                if (opcode == SWIGLU || opcode == GEGLU) {
+                if (opcode == MATMUL || opcode == 0) {
+                    const int mac_cycles = static_cast<int>(std::ceil(
+                        matmul_macs / static_cast<double>(ROUTER_MACS_PER_CYCLE)));
+                    const int sram_elements_per_cycle = ROUTER_SRAM_WIDTH / (DATA_BYTES * 8);
+                    const int sram_cycles = (matmul_macs + sram_elements_per_cycle - 1)
+                                            / sram_elements_per_cycle;
+                    // One SRAM weight read per MAC; streaming reads overlap MAC issue.
+                    // No-work flits retain the one-cycle forwarding cost.
+                    compute_delay = matmul_macs > 0
+                        ? std::max(mac_cycles, sram_cycles) + MAC_LATENCY - 1 : 1;
+                }
+                else if (opcode == SWIGLU || opcode == GEGLU) {
                     compute_delay = 1; 
                 } 
                 else if (opcode == ADD) {
@@ -550,24 +574,41 @@ void VCRouter::outPortDequeue(){
                     // Softmax and projections are only completed when the tail flit arrives.
                     if (flit->type == 1 || flit->type == 10) {
                         
-                        // Calculate the number of local tokens currently in the router's cache
+                        // Calculate the number of local tokens currently in the router's cache.
+                        // Each cached token stores K and V with k_dim elements each;
+                        // q_dim would overestimate the token footprint for GQA.
                         int q_dim = flit->packet->message.data.size() - flit->packet->message.psum_offset;
+                        int k_dim = (flit->packet->message.k_dim > 0)
+                                  ? flit->packet->message.k_dim : q_dim;
+                        int n_heads = (flit->packet->message.n_heads > 0)
+                                    ? flit->packet->message.n_heads : 1;
                         int num_local_tokens = 0;
-                        if (q_dim > 0) {
-                            num_local_tokens = local_kv_cache.size() / (q_dim * 2);
+                        if (k_dim > 0) {
+                            num_local_tokens = local_kv_cache.size() / (k_dim * 2);
                         }
-                        
-                        // Obtain the hardware cycles required for the operations, using PE_NUM_OP as an 
-                        // indicator of the internal parallelization of the router's Special Function Unit (SFU).
-                        int dot_product_ops = (num_local_tokens * q_dim) / PE_NUM_OP + 1; // Q * K^T
-                        int v_proj_ops      = (num_local_tokens * q_dim) / PE_NUM_OP + 1; // Softmax * V
-                        int softmax_mac_ops = (3 * num_local_tokens) / PE_NUM_OP + 1;     // Linear operations of Softmax
-                        
-                        // Latency = (Linear Ops * MAC Cycles) + (Non-Linear Ops * Specific Cycles)
-                        compute_delay = (dot_product_ops + v_proj_ops + softmax_mac_ops) * MAC_LATENCY 
-                                        + (num_local_tokens * EXP_LATENCY) 
-                                        + DIV_LATENCY 
-                                        + SQRT_LATENCY;
+
+                        // A router without local KV data only forwards the tail flit.
+                        // It does not execute attention or the associated SFU operations.
+                        if (num_local_tokens == 0) {
+                            compute_delay = 1;
+                        } else {
+                            // One packet performs all query heads at this router. Its MAC work is
+                            // therefore q_dim * local_tokens, while scalar softmax work and exp
+                            // work are repeated for every query head.
+                            int dot_product_macs = num_local_tokens * q_dim; // Q * K^T
+                            int value_projection_macs = num_local_tokens * q_dim; // softmax * V
+                            int softmax_scalar_ops = 3 * num_local_tokens * n_heads;
+                            int mac_cycles = static_cast<int>(std::ceil(
+                                (dot_product_macs + value_projection_macs + softmax_scalar_ops)
+                                / static_cast<double>(ROUTER_MACS_PER_CYCLE)));
+                            int exp_ops = n_heads * (num_local_tokens + 1);
+
+                            // Latency = pipelined MAC issue plus scalar SFU operations.
+                            compute_delay = mac_cycles * MAC_LATENCY
+                                            + (exp_ops * EXP_LATENCY)
+                                            + DIV_LATENCY
+                                            + SQRT_LATENCY;
+                        }
                                         
                     } else {
                         // Intermediate flits (Head, Body) pass through the router in a pipelined 
