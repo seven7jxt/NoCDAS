@@ -76,6 +76,11 @@ public:
 
 //   std::vector<unsigned int> mfu_occupied_until;
   unsigned int mfu_occupied_until;
+  // True only while the MFU hold was caused by an attention packet waiting
+  // for its local KV token, so retry cycles are not reported as MFU compute
+  // contention as well.
+  bool mfu_waiting_for_kv = false;
+  unsigned int kv_retry_until = 0;
   
   // List of indexes of output tasks assigned to this router
   std::vector<int> assigned_tasks;

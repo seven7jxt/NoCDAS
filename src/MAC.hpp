@@ -14,6 +14,7 @@
 #include <deque>
 #include <cmath>
 #include <cassert>
+#include <cstdint>
 #include "parameters.hpp"
 #include "NoC/Packet.hpp"
 #include "NoC/NI.hpp"
@@ -132,11 +133,22 @@ class MAC
     int causal_mask; 			// 1 turns on the Attention Causal Mask
 	int local_sram_usage;
 
+	// Data-request wait accounting.  A request is split into network/interface
+	// time and the MC's scheduled operand-read interval.
+	bool data_wait_active;
+	bool data_wait_memory_ready;
+	std::uint64_t data_wait_last_cycle;
+	std::uint64_t data_wait_memory_start;
+	std::uint64_t data_wait_memory_ready_cycle;
+	int data_wait_layer;
+
 	MAC* nextMAC;
 
 	bool inject (int type, int d_id, int data_length, float t_output, NI* t_NI, int p_id, int mac_src);
 	void receive (Message* re_msg);
 	void runOneStep();
+	void accountDataWait();
+	void finishDataWait();
 	void sigmoid(float& x);
 	void tanh(float& x);
 	void relu(float& x);

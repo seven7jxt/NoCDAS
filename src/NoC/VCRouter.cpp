@@ -28,6 +28,8 @@ VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t
     local_kv_cache.clear();
 
     mfu_occupied_until = 0;
+    mfu_waiting_for_kv = false;
+    kv_retry_until = 0;
 
     int total_vcs_per_port = t_vn_num * (t_vc_per_vn + t_vc_priority_per_vn);
     
@@ -181,6 +183,22 @@ void VCRouter::processDistributionPacket(Flit* t_flit) {
             }
             
             int base_offset = ring_index * floats_per_token;
+
+            // A distribution packet is split into several flits.  Report one
+            // event per logical token, at the tail, rather than one event per
+            // flit.  sequence_id is the token position in the current layer.
+            if (t_flit->type == 1 || t_flit->type == 10) {
+                const int layer_id = t_flit->packet->message.layer_id;
+                const int logical_token = t_flit->packet->message.sequence_id;
+                std::cerr << "KV_EVICTION layer=" << layer_id
+                          << " router=(" << id[0] << "," << id[1] << ")"
+                          << " token=" << logical_token
+                          << " local-token=" << kv_token_count
+                          << " slot=" << ring_index
+                          << " capacity-tokens=" << max_tokens_in_sram
+                          << " sink-tokens=" << SINK_TOKENS << std::endl;
+                vcNetwork->recordKVEviction(layer_id);
+            }
             
             for (int i = 0; i < payload_size; i++) {
                 // Secure overwrite (writeKV will understand that index < size and won't allocate more SRAM)
@@ -560,6 +578,9 @@ void VCRouter::getSwitch(){
 }
 
 void VCRouter::outPortDequeue(){
+    // This is a per-attempt diagnostic.  The retry interval itself is kept in
+    // kv_retry_until so a blocked port can still be classified correctly.
+    mfu_waiting_for_kv = false;
     for(int count = 0; count < port_num; count++){ 
         int i = (rr_out_port + count) % port_num;
 
@@ -568,6 +589,17 @@ void VCRouter::outPortDequeue(){
 
             if (flit->packet->message.type == 4 || flit->packet->message.type == 5) {
                 if (cycles < mfu_occupied_until) {
+                    // A KV retry occupies the router-wide MFU, but other
+                    // eligible flits blocked by that same hold are waiting
+                    // for the MFU, not for their own KV data.
+                    const bool is_attention =
+                        flit->packet->message.type == 5 &&
+                        flit->packet->message.compute_op == ATTENTION;
+                    const bool waiting_for_kv = is_attention &&
+                                                cycles < kv_retry_until;
+                    mfu_waiting_for_kv = waiting_for_kv;
+                    vcNetwork->recordRouterWait(flit->packet->message.layer_id,
+                                                waiting_for_kv);
                     continue;
                 }
             }
@@ -591,6 +623,9 @@ void VCRouter::outPortDequeue(){
                     }
                     
                     if (kv_token_count < expected_local_tokens) {
+                        vcNetwork->recordRouterWait(flit->packet->message.layer_id, true);
+                        mfu_waiting_for_kv = true;
+                        kv_retry_until = cycles + 2;
                         mfu_occupied_until = cycles + 2;
                         continue;
                     }
@@ -753,6 +788,7 @@ void VCRouter::clearSRAM() {
     local_kv_cache.clear();
     current_sram_usage = 0;
     kv_token_count = 0;
+    kv_retry_until = 0;
 
     kv_token_count = 0;
     assigned_tasks.clear();

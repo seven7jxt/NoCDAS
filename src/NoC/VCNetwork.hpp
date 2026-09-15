@@ -23,6 +23,13 @@ extern unsigned int cycles;
 class VCRouter;
 class NI;
 
+struct WaitCounters {
+  std::uint64_t pe_network = 0;
+  std::uint64_t pe_memory = 0;
+  std::uint64_t router_mfu = 0;
+  std::uint64_t router_kv = 0;
+};
+
 class VCNetwork
 {
 public:
@@ -68,6 +75,20 @@ public:
   std::uint64_t getLayerFlitHops(int layer_id) const;
   std::uint64_t getLayerByteHops(int layer_id) const;
 
+  // Performance counters for time spent waiting on packetized data movement.
+  // All values are in NoC clock cycles and are cumulative until destruction.
+  void recordPEWait(int layer_id, std::uint64_t network_cycles,
+                    std::uint64_t memory_cycles);
+  void recordRouterWait(int layer_id, bool waiting_for_kv);
+  WaitCounters getTotalWaitCycles() const;
+  WaitCounters getLayerWaitCycles(int layer_id) const;
+
+  // Rolling-KV-cache diagnostics.  The event itself is printed by the router;
+  // these counters provide a compact total and per-layer summary.
+  void recordKVEviction(int layer_id);
+  std::uint64_t getTotalKVEvictions() const;
+  std::uint64_t getLayerKVEvictions(int layer_id) const;
+
 //   added
 //  void show_VCR_buffer_state();
 
@@ -79,6 +100,10 @@ public:
 private:
   std::uint64_t total_flit_hops;
   std::map<int, std::uint64_t> layer_flit_hops;
+  WaitCounters total_wait_cycles;
+  std::map<int, WaitCounters> layer_wait_cycles;
+  std::uint64_t total_kv_evictions = 0;
+  std::map<int, std::uint64_t> layer_kv_evictions;
 };
 
 #endif /* VCNETWORK_HPP_ */

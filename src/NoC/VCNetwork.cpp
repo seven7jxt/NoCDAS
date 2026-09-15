@@ -75,6 +75,48 @@ void VCNetwork::recordFlitHop(int layer_id){
   ++layer_flit_hops[layer_id];
 }
 
+void VCNetwork::recordPEWait(int layer_id, std::uint64_t network_cycles,
+                             std::uint64_t memory_cycles){
+  total_wait_cycles.pe_network += network_cycles;
+  total_wait_cycles.pe_memory += memory_cycles;
+  auto& layer = layer_wait_cycles[layer_id];
+  layer.pe_network += network_cycles;
+  layer.pe_memory += memory_cycles;
+}
+
+void VCNetwork::recordRouterWait(int layer_id, bool waiting_for_kv){
+  if (waiting_for_kv) {
+    ++total_wait_cycles.router_kv;
+    ++layer_wait_cycles[layer_id].router_kv;
+  } else {
+    ++total_wait_cycles.router_mfu;
+    ++layer_wait_cycles[layer_id].router_mfu;
+  }
+}
+
+WaitCounters VCNetwork::getTotalWaitCycles() const{
+  return total_wait_cycles;
+}
+
+WaitCounters VCNetwork::getLayerWaitCycles(int layer_id) const{
+  auto it = layer_wait_cycles.find(layer_id);
+  return it == layer_wait_cycles.end() ? WaitCounters{} : it->second;
+}
+
+void VCNetwork::recordKVEviction(int layer_id){
+  ++total_kv_evictions;
+  ++layer_kv_evictions[layer_id];
+}
+
+std::uint64_t VCNetwork::getTotalKVEvictions() const{
+  return total_kv_evictions;
+}
+
+std::uint64_t VCNetwork::getLayerKVEvictions(int layer_id) const{
+  auto it = layer_kv_evictions.find(layer_id);
+  return it == layer_kv_evictions.end() ? 0 : it->second;
+}
+
 std::uint64_t VCNetwork::getTotalFlitHops() const{
   return total_flit_hops;
 }

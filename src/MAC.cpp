@@ -50,6 +50,13 @@ MAC::MAC (int t_id, MACnet* t_net, int t_NI_id)
     causal_mask = 0;
     local_sram_usage = 0;
 
+    data_wait_active = false;
+    data_wait_memory_ready = false;
+    data_wait_last_cycle = 0;
+    data_wait_memory_start = 0;
+    data_wait_memory_ready_cycle = 0;
+    data_wait_layer = -1;
+
     current_chunk = 0;
     total_chunks = 1;
     psum_accumulator = 0.0f;
@@ -120,6 +127,28 @@ MAC::MAC (int t_id, MACnet* t_net, int t_NI_id)
 
 bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI, int p_id, int mac_src)
 {
+    if (type == 0 && !data_wait_active) {
+        data_wait_active = true;
+        data_wait_memory_ready = false;
+        data_wait_last_cycle = cycles;
+        data_wait_memory_start = cycles;
+        data_wait_memory_ready_cycle = cycles;
+        data_wait_layer = net->c_layer;
+    }
+
+    // MC responses are scheduled after the MC has assigned its pecycle.  Keep
+    // the ready interval on the requesting PE, rather than on the shared MC,
+    // because several PEs may have outstanding requests simultaneously.
+    if (type == 1 && mac_src >= 0 && mac_src < static_cast<int>(net->MAC_list.size())) {
+        MAC* requester = net->MAC_list[mac_src];
+        if (requester->data_wait_active) {
+            requester->data_wait_memory_ready = true;
+            requester->data_wait_memory_start = cycles;
+            requester->data_wait_memory_ready_cycle =
+                std::max<std::uint64_t>(cycles, this->pecycle);
+        }
+    }
+
     Message msg;
     msg.NI_id = NI_id;
     msg.mac_id = mac_src;                       //MAC
@@ -161,9 +190,43 @@ bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI,
     return true;
 }
 
+void MAC::accountDataWait()
+{
+    if (!data_wait_active || cycles <= data_wait_last_cycle) return;
+
+    const std::uint64_t begin = data_wait_last_cycle;
+    const std::uint64_t end = cycles;
+    std::uint64_t memory_cycles = 0;
+    if (data_wait_memory_ready) {
+        const std::uint64_t memory_begin = data_wait_memory_start;
+        const std::uint64_t memory_end = data_wait_memory_ready_cycle;
+        const std::uint64_t overlap_begin = std::max(begin, memory_begin);
+        const std::uint64_t overlap_end = std::min(end, memory_end);
+        if (overlap_end > overlap_begin) {
+            memory_cycles = overlap_end - overlap_begin;
+        }
+    }
+
+    const std::uint64_t elapsed = end - begin;
+    net->vcNetwork->recordPEWait(data_wait_layer, elapsed - memory_cycles,
+                                  memory_cycles);
+    data_wait_last_cycle = end;
+}
+
+void MAC::finishDataWait()
+{
+    if (!data_wait_active) return;
+    accountDataWait();
+    data_wait_active = false;
+}
+
 
 void MAC::runOneStep()
 {
+    // Sample before scheduler gating so a PE waiting for a response is still
+    // charged while its local pecycle is in the future.
+    accountDataWait();
+
     // output stationary (neuron based calculation)
     if (pecycle < cycles){
         // initial idle state

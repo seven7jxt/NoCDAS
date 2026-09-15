@@ -399,6 +399,7 @@ void MACnet::inject_cNoC_traffic() {
                 dist_msg.out_cycle = cycles; 
                 dist_msg.signal_id = packet_id + y;
                 dist_msg.layer_id = c_layer;
+                dist_msg.sequence_id = y;
 
                 int base_idx = y * fused_dim;
                 
@@ -798,6 +799,10 @@ void MACnet::checkStatus()
         vcNetwork->getLayerFlitHops(finished_layer);
     const std::uint64_t finished_layer_byte_hops =
         vcNetwork->getLayerByteHops(finished_layer);
+    const WaitCounters finished_layer_wait =
+        vcNetwork->getLayerWaitCycles(finished_layer);
+    const std::uint64_t finished_layer_evictions =
+        vcNetwork->getLayerKVEvictions(finished_layer);
 
     c_layer++; 
     if(c_layer == n_layer)
@@ -805,7 +810,12 @@ void MACnet::checkStatus()
         cout << "All finished! at cycle " << cycles
              << " | Layer " << finished_layer
              << " flit-hops: " << finished_layer_flit_hops
-             << " byte-hops: " << finished_layer_byte_hops << endl;
+             << " byte-hops: " << finished_layer_byte_hops
+             << " | wait-cycles: pe-net=" << finished_layer_wait.pe_network
+             << " pe-mem=" << finished_layer_wait.pe_memory
+             << " router-mfu=" << finished_layer_wait.router_mfu
+             << " router-kv=" << finished_layer_wait.router_kv
+             << " | kv-evictions: " << finished_layer_evictions << endl;
         output_table = layer_outputs_history[c_layer - 1];
         Layer_latency.push_back(cycles);
         readyflag = 2;
@@ -816,7 +826,12 @@ void MACnet::checkStatus()
     {
         cout << "Layer finished " << finished_layer << " at cycle " << cycles
              << " | flit-hops: " << finished_layer_flit_hops
-             << " byte-hops: " << finished_layer_byte_hops << endl;
+             << " byte-hops: " << finished_layer_byte_hops
+             << " | wait-cycles: pe-net=" << finished_layer_wait.pe_network
+             << " pe-mem=" << finished_layer_wait.pe_memory
+             << " router-mfu=" << finished_layer_wait.router_mfu
+             << " router-kv=" << finished_layer_wait.router_kv
+             << " | kv-evictions: " << finished_layer_evictions << endl;
         Layer_latency.push_back(cycles);
         packet_id = packet_id + o_ch*o_x*o_y;
     }
@@ -1423,6 +1438,7 @@ void MACnet::runOneStep()
 #endif
             tmpMAC = MAC_list[src_mac];
             tmpMAC->request = -1;
+            tmpMAC->finishDataWait();
             it = tmpNI->packet_buffer_out[0].erase(it);
             Packet::release(tmpPacket);
         }

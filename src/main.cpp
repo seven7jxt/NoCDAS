@@ -237,6 +237,12 @@ int main(int arg_num, char *arg_vet[]) {
     cout << "Flit size (bytes): " << FLIT_LENGTH << endl;
     cout << "Total inter-router flit-hops: " << vcNetwork->getTotalFlitHops() << endl;
     cout << "Total inter-router byte-hops: " << vcNetwork->getTotalByteHops() << endl;
+    const WaitCounters wait_cycles = vcNetwork->getTotalWaitCycles();
+    cout << "Total wait-cycles: pe-net=" << wait_cycles.pe_network
+         << " pe-mem=" << wait_cycles.pe_memory
+         << " router-mfu=" << wait_cycles.router_mfu
+         << " router-kv=" << wait_cycles.router_kv << endl;
+    cout << "Total KV evictions: " << vcNetwork->getTotalKVEvictions() << endl;
 
 #ifdef Countlatency
 	int maxoutnum = CountNum;
