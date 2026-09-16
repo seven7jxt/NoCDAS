@@ -145,7 +145,9 @@
 
 //////////////////////////////////
 #define FREQUENCY 1 					// GHz (NoC clock frequency)
+#ifndef PE_NUM_OP
 #define PE_NUM_OP 320   				// 320 OP per PE cycle (define the MAC array size in PE)
+#endif
 // #define PE_NUM_OP (25 * QUANT_MULTIPLIER)
 #define PE_FREQ_RATIO 10 				// NoC freq / PE freq, PE 100MHz -> 10 (define the nodes (PE/MC) clock frequency)
 // #define MEM_read_delay 0.3125 			// delay for 2byte / 1 data (define the cache data transfer speed)
@@ -195,6 +197,9 @@
 #endif
 #ifndef PE_GATE_BATCH_PAIRS
 #define PE_GATE_BATCH_PAIRS (MAC_INPUT_SRAM_LIMIT / 2)
+#endif
+#ifndef PE_ADD_BATCH_PAIRS
+#define PE_ADD_BATCH_PAIRS (MAC_INPUT_SRAM_LIMIT / 2)
 #endif
 // Packet batching only: MC input queues are abstract, not capacity-limited SRAM.
 #ifndef CNOC_GATE_BATCH_PAIRS

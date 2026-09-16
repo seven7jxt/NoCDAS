@@ -878,13 +878,13 @@ void MACnet::checkStatus()
                 this->MAC_list[i]->routing_table.assign(mapping_table[i].begin(),mapping_table[i].end());
             }
             this->MAC_list[i]->local_sram_usage = 0;
-            this->MAC_list[i]->gate_tasks.clear();
+            this->MAC_list[i]->elementwise_tasks.clear();
 #ifdef cNoC_MODE
-			this->MAC_list[i]->use_gate_batch = false;
+			this->MAC_list[i]->use_elementwise_batch = false;
 			this->MAC_list[i]->use_matmul_tiling = false;
 #else
-            this->MAC_list[i]->use_gate_batch =
-                (o_fn == SWIGLU || o_fn == GEGLU);
+            this->MAC_list[i]->use_elementwise_batch =
+                (o_fn == ADD || o_fn == SWIGLU || o_fn == GEGLU);
 			this->MAC_list[i]->use_matmul_tiling =
 				(this->cnnmodel->all_layer_type[c_layer] == 'm' ||
 				 this->cnnmodel->all_layer_type[c_layer] == 'f');
@@ -1363,21 +1363,18 @@ void MACnet::runOneStep()
                     else if (o_fn == ADD) { 
                         tmpMAC->inbuffer.push_back(o_fn);
                         tmpMAC->inbuffer.push_back(in_x);
-                        tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), this->input_table[0].begin() + tmpy*in_x, this->input_table[0].begin() + tmpy*in_x + in_x); 
                         int residual_source_id = this->cnnmodel->all_layer_size[c_layer][1]; 
                         if (layer_outputs_history.find(residual_source_id) == layer_outputs_history.end()) {
                             residual_source_id = (c_layer > 0) ? (c_layer - 1) : 0;
                         }
-                        if (layer_outputs_history[residual_source_id].empty()) {
-                            tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), in_x, 0.0); 
-                        } else {
-                            auto& residual_data = layer_outputs_history[residual_source_id][0];
-                            int required_size = (tmpy * in_x) + in_x;
-                            if (residual_data.size() < required_size) {
-                                tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), in_x, 0.0);
-                            } else {
-                                tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), residual_data.begin() + tmpy*in_x, residual_data.begin() + tmpy*in_x + in_x);
-                            }
+                        const auto& residual = layer_outputs_history[residual_source_id];
+                        for (int task : tmpMAC->elementwise_tasks) {
+                            const int row = task / o_x, col = task % o_x;
+                            const int offset = row * in_x + col;
+                            tmpMAC->inbuffer.push_back(input_table[0][offset]);
+                            const bool valid = !residual.empty() &&
+                                residual[0].size() >= static_cast<size_t>((row + 1) * in_x);
+                            tmpMAC->inbuffer.push_back(valid ? residual[0][offset] : 0.0f);
                         }
                     }
                     else if (o_fn == EMBEDDING) { 
@@ -1398,7 +1395,7 @@ void MACnet::runOneStep()
                     else if (o_fn == SWIGLU || o_fn == GEGLU) { 
                         tmpMAC->inbuffer.push_back(o_fn);
                         tmpMAC->inbuffer.push_back(o_x); 
-                        for (int task : tmpMAC->gate_tasks) {
+                        for (int task : tmpMAC->elementwise_tasks) {
                             const int row = task / o_x;
                             const int col = task % o_x;
                             tmpMAC->inbuffer.push_back(input_table[0][row * in_x + col]);
@@ -1569,7 +1566,7 @@ void MACnet::runOneStep()
 #endif
             }
 #ifdef only3type
-            if (tmpMAC->use_gate_batch) ++tmpMAC->received_acks;
+            if (tmpMAC->use_elementwise_batch) ++tmpMAC->received_acks;
 #endif
             it = tmpNI->packet_buffer_out[1].erase(it);
             Packet::release(tmpPacket);
@@ -1637,7 +1634,7 @@ void MACnet::runOneStep()
             }
             src_mac = tmpPacket->message.mac_id;
             tmpMAC = MAC_list[src_mac];
-            if ((tmpMAC->use_matmul_tiling || tmpMAC->use_gate_batch) && tmpMAC->pending_acks > 0) {
+            if ((tmpMAC->use_matmul_tiling || tmpMAC->use_elementwise_batch) && tmpMAC->pending_acks > 0) {
                 tmpMAC->received_acks++;
             } else {
                 tmpMAC->send = 2;

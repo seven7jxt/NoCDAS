@@ -18,6 +18,8 @@ void MAC::recordSramUsage() {
 static_assert(PE_GATE_LATENCY > 0, "Gate timing must be positive");
 static_assert(PE_GATE_BATCH_PAIRS > 0 && MAC_INPUT_SRAM_LIMIT >= 2,
               "Activation SRAM must hold a gate/up pair");
+static_assert(PE_ADD_BATCH_PAIRS > 0 && PE_NUM_OP > 0 && ADD_LATENCY > 0,
+              "ADD batch size, throughput and latency must be positive");
 
 MAC::MAC (int t_id, MACnet* t_net, int t_NI_id)
 {
@@ -265,11 +267,12 @@ void MAC::runOneStep()
                 request = routing_table.front();
                 tmp_request = request;
                 routing_table.pop_front();
-                if (use_gate_batch) {
-                    gate_tasks.assign(1, request);
-                    const size_t capacity = std::min(PE_GATE_BATCH_PAIRS, MAC_INPUT_SRAM_LIMIT / 2);
-                    while (!routing_table.empty() && gate_tasks.size() < capacity) {
-                        gate_tasks.push_back(routing_table.front());
+                if (use_elementwise_batch) {
+                    elementwise_tasks.assign(1, request);
+                    const size_t capacity = std::min(net->o_fn == ADD ? PE_ADD_BATCH_PAIRS : PE_GATE_BATCH_PAIRS,
+                                                     MAC_INPUT_SRAM_LIMIT / 2);
+                    while (!routing_table.empty() && elementwise_tasks.size() < capacity) {
+                        elementwise_tasks.push_back(routing_table.front());
                         routing_table.pop_front();
                     }
                 }
@@ -384,10 +387,10 @@ void MAC::runOneStep()
                 ch_size = 1;
                 if (fn == MATMUL || fn == ADD || fn == SWIGLU || fn == GEGLU) { 
                     m_size = inbuffer[1];
-                    if (fn == SWIGLU || fn == GEGLU) {
-                        // Interleaved gate/up pairs occupy activation SRAM; no weights.
+                    if (fn == ADD || fn == SWIGLU || fn == GEGLU) {
+                        // Interleaved operand pairs occupy activation SRAM; no weights.
                         infeature.assign(inbuffer.begin() + 2, inbuffer.end());
-                        assert(infeature.size() == 2 * (use_gate_batch ? gate_tasks.size() : 1));
+                        assert(infeature.size() == 2 * (use_elementwise_batch ? elementwise_tasks.size() : 1));
                     } else if (fn == MATMUL && use_matmul_tiling && inbuffer[1] < 0) {
                         // Tiled MatMul response uses the same layout as tiled FC.
                         m_size = -static_cast<int>(inbuffer[1]);
@@ -450,7 +453,7 @@ void MAC::runOneStep()
             assert(weight.size() <= MAC_WEIGHT_SRAM_LIMIT && "Weight size exceeds MAC weight SRAM limit");
 
             // The receive buffer and activation vector represent the same data SRAM.
-            if (use_gate_batch) inbuffer.clear();
+            if (use_elementwise_batch) inbuffer.clear();
 
             outfeature = 0.0;
             selfstatus = 3;
@@ -539,21 +542,24 @@ void MAC::runOneStep()
             }
             else if (fn >= MATMUL && fn <= GEGLU)                                               // Operazioni Transformer
             {
-                if (use_gate_batch && (fn == SWIGLU || fn == GEGLU)) {
-                    pending_acks = static_cast<int>(gate_tasks.size());
+                if (use_elementwise_batch && (fn == ADD || fn == SWIGLU || fn == GEGLU)) {
+                    pending_acks = static_cast<int>(elementwise_tasks.size());
                     received_acks = 0;
                     selfstatus = 4;
                     send = 1; // Earlier scalar results may return before the batch finishes.
-                    for (size_t index = 0; index < gate_tasks.size(); ++index) {
+                    for (size_t index = 0; index < elementwise_tasks.size(); ++index) {
                         const float gate = infeature[2 * index];
                         const float up = infeature[2 * index + 1];
-                        outfeature = fn == SWIGLU
+                        outfeature = fn == ADD ? gate + up : fn == SWIGLU
                             ? gate * (1.0 / (1.0 + std::exp(-gate))) * up
                             : 0.5f * gate * (1.0f + std::erf(gate / 1.41421356f)) * up;
                         // Reuse consumed input space; output packets model timed egress.
                         infeature[index] = outfeature;
-                        tmpm = gate_tasks[index];
-                        pecycle = cycles + static_cast<Cycle>(index + 1) * PE_GATE_LATENCY * PE_FREQ_RATIO;
+                        tmpm = elementwise_tasks[index];
+                        const Cycle compute_cycles = fn == ADD
+                            ? ((static_cast<Cycle>(index) + PE_NUM_OP) / PE_NUM_OP) * ADD_LATENCY
+                            : static_cast<Cycle>(index + 1) * PE_GATE_LATENCY;
+                        pecycle = cycles + compute_cycles * PE_FREQ_RATIO;
                         inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id],
                                packet_id + tmpm, id);
 #ifdef Countlatency
@@ -602,8 +608,7 @@ void MAC::runOneStep()
                     }
                 } 
                 else if (fn == ADD) {                                                               // Add (Residual Connection)
-                    int idx = tmpm % m_size;
-                    outfeature = infeature[idx] + weight[idx];
+                    outfeature = infeature[0] + infeature[1];
                 } 
                 else if (fn == EMBEDDING) {                                                         // Embedding Lookup
                     int idx = tmpm % m_size;
@@ -859,7 +864,7 @@ void MAC::runOneStep()
                 } 
                 else if (fn == ADD) { 
                     // Add (Residual Connection)
-                    calctime = (m_size / PE_NUM_OP + 1) * ADD_LATENCY;
+                    calctime = ADD_LATENCY;
                 } 
                 else if (fn == EMBEDDING) { 
                     // Embedding: direct lookup, no arithmetic cost
@@ -1042,9 +1047,9 @@ void MAC::runOneStep()
         }
         else if(selfstatus == 4){
 #ifndef only3type
-            if(((this->use_matmul_tiling || this->use_gate_batch) && this->pending_acks > 0 &&
+            if(((this->use_matmul_tiling || this->use_elementwise_batch) && this->pending_acks > 0 &&
                 this->received_acks >= this->pending_acks) ||
-               (!this->use_matmul_tiling && !this->use_gate_batch && this->send == 2)) // tile/result confirmation
+               (!this->use_matmul_tiling && !this->use_elementwise_batch && this->send == 2)) // tile/result confirmation
             {
                 this->send = 0;
                 this->pending_acks = 0;
@@ -1088,12 +1093,12 @@ void MAC::runOneStep()
             pecycle = cycles;
 #endif
 #ifdef only3type
-            if (use_gate_batch && received_acks < pending_acks) return;
+            if (use_elementwise_batch && received_acks < pending_acks) return;
             this->send = 0;
             if(this->routing_table.size()==0)
             {
                 this->selfstatus = 5;
-                if (use_gate_batch) this->send = 3;
+                if (use_elementwise_batch) this->send = 3;
             }
             else
             {

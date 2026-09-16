@@ -81,8 +81,9 @@ class MAC
 	// across several consecutive output rows.
 	bool use_matmul_tiling;
 
-    bool use_gate_batch = false;
-    std::vector<int> gate_tasks;
+    // ADD and gates share batch transport, SRAM bounds, and result acknowledgements.
+    bool use_elementwise_batch = false;
+    std::vector<int> elementwise_tasks;
 	bool matmul_activation_valid;
 	int matmul_activation_row;
 	int matmul_requested_row;
