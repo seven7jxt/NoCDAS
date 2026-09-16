@@ -16,6 +16,7 @@
 #include <cassert>
 #include <cstdint>
 #include "parameters.hpp"
+#include "SramStats.hpp"
 #include "NoC/Packet.hpp"
 #include "NoC/NI.hpp"
 #include "MACnet.hpp"
@@ -119,6 +120,9 @@ class MAC
 	int max_context_limit;
 
 	std::vector<float> cached_attention_scores;
+    SramStats sram_stats;
+    std::uint64_t score_cache_peak_bytes = 0;
+    void recordSramUsage();
 	int cached_score_row;
 	int cached_score_head;
 

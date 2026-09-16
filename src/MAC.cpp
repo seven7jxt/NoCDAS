@@ -5,6 +5,16 @@
 
 #include "MAC.hpp"
 
+void MAC::recordSramUsage() {
+    sram_stats.observe(static_cast<std::uint64_t>(weight.size()) * DATA_BYTES,
+                       static_cast<std::uint64_t>(infeature.size()) * DATA_BYTES,
+                       static_cast<std::uint64_t>(kv_cache.size()) * DATA_BYTES,
+                       cycles, net->c_layer);
+    // Attention scores are unquantized intermediates; report separately from data SRAM.
+    score_cache_peak_bytes = std::max(score_cache_peak_bytes,
+        static_cast<std::uint64_t>(cached_attention_scores.size()) * 4);
+}
+
 static_assert(PE_GATE_LATENCY > 0, "Gate timing must be positive");
 static_assert(PE_GATE_BATCH_PAIRS > 0 && MAC_INPUT_SRAM_LIMIT >= 2,
               "Activation SRAM must hold a gate/up pair");
@@ -421,6 +431,7 @@ void MAC::runOneStep()
                 }
             }
 
+            recordSramUsage();
             if (use_matmul_tiling && (fn == MATMUL || (fn >= 4 && fn <= 7)) &&
                 inbuffer[1] < 0) {
                 assert(matmul_tile_count > 0 && "Invalid MatMul/Linear tile count");
@@ -703,6 +714,7 @@ void MAC::runOneStep()
                         }
                         cached_through_token = kv_start_token + kv_token_count - 1;
                     }
+                    recordSramUsage();
                     assert(kv_cache.size() == expected_cache_size && "Head-local KV cache size mismatch");
 
                     // calculating score (O(N)) or cache recovery (O(1)) ---
@@ -775,6 +787,7 @@ void MAC::runOneStep()
 
                         // cache score update
                         this->cached_attention_scores = final_scores;
+                        recordSramUsage();
                         this->cached_score_row = current_row;
                         this->cached_score_head = my_head;
 

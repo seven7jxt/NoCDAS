@@ -61,6 +61,7 @@ public:
 
 	void runOneStep();
 	void checkStatus();
+    void reportSramPeaks(std::ostream& out) const;
 
 	Model* cnnmodel;
 	int macNum;

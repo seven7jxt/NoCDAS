@@ -111,6 +111,7 @@ int VCRouter::getRoute(Flit* t_flit){
 }
 
 void VCRouter::processDistributionPacket(Flit* t_flit) {
+    sram_layer = t_flit->packet->message.layer_id;
     int flat_router_id = id[0] * X_NUM + id[1]; 
 
     if (t_flit->computed_routers.test(flat_router_id)) {
@@ -745,6 +746,12 @@ bool VCRouter::allocateSRAM(int num_floats) {
     return true;
 }
 
+void VCRouter::recordSramUsage() {
+    sram_stats.observe(static_cast<std::uint64_t>(local_weights.size()) * DATA_BYTES, 0,
+                       static_cast<std::uint64_t>(local_kv_cache.size()) * DATA_BYTES,
+                       cycles, sram_layer);
+}
+
 void VCRouter::storeWeight(float weight_value) {
     bool can_allocate = allocateSRAM(1);
     if (!can_allocate) {
@@ -753,6 +760,7 @@ void VCRouter::storeWeight(float weight_value) {
         exit(EXIT_FAILURE);
     }
     local_weights.push_back(weight_value);
+    recordSramUsage();
 }
 
 void VCRouter::storeKV(float kv_value) {
@@ -763,6 +771,7 @@ void VCRouter::storeKV(float kv_value) {
         exit(EXIT_FAILURE);
     }
     local_kv_cache.push_back(kv_value);
+    recordSramUsage();
 }
 
 void VCRouter::writeKV(int index, float kv_value) {
@@ -777,6 +786,7 @@ void VCRouter::writeKV(int index, float kv_value) {
         }
         
         local_kv_cache.resize(index + 1, 0.0f);
+        recordSramUsage();
     }
     local_kv_cache[index] = kv_value;
 }

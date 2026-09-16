@@ -12,6 +12,7 @@
 #include "VCNetwork.hpp"
 #include "NRBase.hpp"
 #include "Model.hpp"
+#include "../SramStats.hpp"
 #include <vector>
 #include <map>
 
@@ -67,6 +68,9 @@ public:
   int kv_token_count = 0;
 
   int current_sram_usage;
+  SramStats sram_stats;
+  int sram_layer = -1;
+  void recordSramUsage();
   
   bool allocateSRAM(int num_floats);
   void clearSRAM();

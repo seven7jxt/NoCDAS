@@ -243,6 +243,7 @@ int main(int arg_num, char *arg_vet[]) {
          << " router-mfu=" << wait_cycles.router_mfu
          << " router-kv=" << wait_cycles.router_kv << endl;
     cout << "Total KV evictions: " << vcNetwork->getTotalKVEvictions() << endl;
+    macnet->reportSramPeaks(cout);
 
 #ifdef Countlatency
 	int maxoutnum = CountNum;

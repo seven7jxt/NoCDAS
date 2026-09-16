@@ -11,6 +11,51 @@ static_assert(CNOC_GATE_BATCH_PAIRS > 0, "MC packet batch size must be positive"
 template<class C, typename T>
 bool contains(C&& c, T e) { return find(begin(c), end(c), e) != end(c); };
 
+void MACnet::reportSramPeaks(std::ostream& out) const {
+    out << "SRAM_PEAK_SCOPE units=bytes data-bytes=" << DATA_BYTES
+        << " total=weight+activation+kv non-kv=weight+activation score-cache=separate-fp32"
+        << " excludes=MC-queues,packet-buffers,VC-buffers,host-tables,temporary-vectors"
+        << " completed=" << (c_layer == n_layer) << '\n';
+    std::uint64_t max_pe = 0, max_router = 0;
+    std::uint64_t max_pe_non_kv = 0, max_router_non_kv = 0;
+    std::uint64_t max_pe_kv = 0, max_router_kv = 0;
+    for (const auto* pe : MAC_list) {
+        if (contains(dest_list, pe->NI_id)) continue;
+        const auto& s = pe->sram_stats;
+        out << "SRAM_PEAK_PE id=" << pe->id << " node=" << pe->NI_id
+            << " weight_bytes=" << s.weight_peak
+            << " activation_bytes=" << s.activation_peak << " kv_bytes=" << s.kv_peak
+            << " total_bytes=" << s.total_peak
+            << " non_kv_bytes=" << s.non_kv_peak
+            << " non_kv_peak_layer=" << s.non_kv_peak_layer
+            << " non_kv_peak_cycle=" << s.non_kv_peak_cycle
+            << " score_cache_fp32_bytes=" << pe->score_cache_peak_bytes
+            << " total_peak_layer=" << s.peak_layer << " total_peak_cycle=" << s.peak_cycle << '\n';
+        max_pe = std::max(max_pe, s.total_peak);
+        max_pe_non_kv = std::max(max_pe_non_kv, s.non_kv_peak);
+        max_pe_kv = std::max(max_pe_kv, s.kv_peak);
+    }
+    for (const auto* router : vcNetwork->router_list) {
+        const auto& s = router->sram_stats;
+        out << "SRAM_PEAK_ROUTER id=" << router->id[0] * X_NUM + router->id[1]
+            << " weight_bytes=" << s.weight_peak << " kv_bytes=" << s.kv_peak
+            << " total_bytes=" << s.total_peak
+            << " non_kv_bytes=" << s.non_kv_peak
+            << " non_kv_peak_layer=" << s.non_kv_peak_layer
+            << " non_kv_peak_cycle=" << s.non_kv_peak_cycle
+            << " total_peak_layer=" << s.peak_layer << " total_peak_cycle=" << s.peak_cycle << '\n';
+        max_router = std::max(max_router, s.total_peak);
+        max_router_non_kv = std::max(max_router_non_kv, s.non_kv_peak);
+        max_router_kv = std::max(max_router_kv, s.kv_peak);
+    }
+    out << "SRAM_PEAK_SUMMARY max_single_pe_bytes=" << max_pe
+        << " max_single_router_bytes=" << max_router
+        << " max_single_pe_non_kv_bytes=" << max_pe_non_kv
+        << " max_single_router_non_kv_bytes=" << max_router_non_kv
+        << " max_single_pe_kv_bytes=" << max_pe_kv
+        << " max_single_router_kv_bytes=" << max_router_kv << '\n';
+}
+
 MACnet::MACnet (int mac_num, int t_pe_x, int t_pe_y, Model *m, VCNetwork* t_Network)
 {
     macNum = mac_num;
