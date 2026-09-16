@@ -6,6 +6,8 @@
 #include "MACnet.hpp"
 #include <algorithm>
 
+static_assert(CNOC_GATE_BATCH_PAIRS > 0, "MC packet batch size must be positive");
+
 template<class C, typename T>
 bool contains(C&& c, T e) { return find(begin(c), end(c), e) != end(c); };
 
@@ -27,6 +29,25 @@ MACnet::MACnet (int mac_num, int t_pe_x, int t_pe_y, Model *m, VCNetwork* t_Netw
     
     causal_mask_flag = 0;
     cnoc_phase = 0; 
+
+    int gate_resources = 0;
+    for (int pe = 0; pe < macNum; ++pe)
+        if (!contains(dest_list, pe % TOT_NUM)) ++gate_resources;
+    terminal_lanes.resize(MEM_NODES);
+    terminal_outputs.assign(MEM_NODES, 0);
+    for (int mc = 0; mc < MEM_NODES; ++mc) {
+        terminal_lanes[mc].resize(gate_resources / MEM_NODES + (mc < gate_resources % MEM_NODES));
+        if (terminal_lanes[mc].empty()) {
+            std::cerr << "Not enough PE-equivalent gate lanes for all MC terminals\n";
+            std::exit(EXIT_FAILURE);
+        }
+    }
+#ifdef cNoC_MODE
+    std::cout << "TERMINAL_RESOURCES lanes=" << gate_resources << " mc=" << MEM_NODES
+              << " latency=" << PE_GATE_LATENCY << " execution=serial"
+              << " freq-ratio=" << PE_FREQ_RATIO
+              << " input-queue=abstract batch-pairs=" << CNOC_GATE_BATCH_PAIRS << '\n';
+#endif
 
     for(int i=0; i<macNum; i++){ 
         temp_ni_id = i%TOT_NUM;
@@ -383,6 +404,7 @@ void MACnet::cNoC_mapping(int task_num) {
 }
 
 void MACnet::inject_cNoC_traffic() {
+    if (o_fn == SWIGLU || o_fn == GEGLU) return;
     int mem_id = dest_list[0]; 
     NI* mem_ni = this->vcNetwork->NI_list[mem_id];
 
@@ -626,6 +648,111 @@ void MACnet::inject_cNoC_traffic() {
     }
 }
 
+void MACnet::start_terminal_gate() {
+    terminal_gate_active = true;
+    terminal_remaining = o_x * o_y;
+    terminal_dispatch_ready = cycles;
+    terminal_outputs.assign(MEM_NODES, 0);
+    for (auto& lanes : terminal_lanes)
+        for (auto& lane : lanes) lane = TerminalLane{};
+    for (int y = 0; y < o_y; ++y) {
+        auto& lanes = terminal_lanes[y % MEM_NODES];
+        for (int k = 0; k < o_x; ++k)
+            lanes[(y / MEM_NODES * o_x + k) % lanes.size()].tasks.push_back(y * o_x + k);
+    }
+    cnoc_phase = 3;
+}
+
+void MACnet::run_terminal_gate() {
+    if (!terminal_gate_active) return;
+    NI* source = vcNetwork->NI_list[dest_list[0]];
+    for (int mc = 0; mc < MEM_NODES; ++mc) {
+        auto& queue = vcNetwork->NI_list[dest_list[mc]]->packet_buffer_out[0];
+        for (auto it = queue.begin(); it != queue.end();) {
+            Packet* packet = *it;
+            if (packet->message.type != 7 || packet->message.out_cycle > cycles) { ++it; continue; }
+            auto& lane = terminal_lanes[mc].at(packet->message.mac_id);
+            assert(packet->message.layer_id == c_layer && lane.waiting_for_input);
+            assert(packet->message.data.size() == 2 * lane.batch_count);
+            lane.inbuffer.assign(packet->message.data.begin(), packet->message.data.end());
+            lane.waiting_for_input = false;
+            lane.first_ready = cycles + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
+            it = queue.erase(it);
+            Packet::release(packet);
+        }
+    }
+    for (int mc = 0; mc < MEM_NODES; ++mc) {
+        for (size_t index = 0; index < terminal_lanes[mc].size(); ++index) {
+            auto& lane = terminal_lanes[mc][index];
+            if (lane.batch_count == 0 && !lane.tasks.empty()) {
+                if (cycles < terminal_dispatch_ready ||
+                    (mc != 0 && source->packetBuffer_list[0]->packet_num >= NI_TX_FIFO_DEPTH)) continue;
+                lane.batch_count = std::min(lane.tasks.size(),
+                    static_cast<size_t>(CNOC_GATE_BATCH_PAIRS));
+                lane.issued = 0;
+                std::vector<float> operands;
+                for (size_t i = 0; i < lane.batch_count; ++i) {
+                    const int task = lane.tasks[i], y = task / o_x, k = task % o_x;
+                    operands.push_back(input_table[0][y * in_x + k]);
+                    operands.push_back(input_table[0][y * in_x + k + o_x]);
+                }
+                // MC[0] serializes batch reads/repacketization. No next-batch prefetch.
+                const Cycle refill = static_cast<Cycle>(std::ceil((2 * lane.batch_count + 2) * MEM_read_delay)) + CACHE_DELAY;
+                const Cycle copy = (operands.size() * DATA_BYTES + FLIT_LENGTH - 1) / FLIT_LENGTH;
+                terminal_dispatch_ready = cycles + refill + (mc == 0 ? 0 : copy);
+                if (mc == 0) {
+                    lane.inbuffer.assign(operands.begin(), operands.end());
+                    lane.first_ready = terminal_dispatch_ready + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
+                } else {
+                    Message message{};
+                    message.type = 7;
+                    message.source_id = message.NI_id = source->id;
+                    message.destination = dest_list[mc];
+                    message.mac_id = index;
+                    message.layer_id = c_layer;
+                    message.data = std::move(operands);
+                    message.data_length = message.data.size();
+                    message.out_cycle = terminal_dispatch_ready;
+                    Packet* packet = Packet::allocate(std::move(message), X_NUM, source->NI_num);
+                    packet->send_out_time = packet->message.out_cycle;
+                    packet->in_net_time = cycles;
+                    source->packetBuffer_list[0]->enqueue(packet);
+                    lane.waiting_for_input = true;
+                }
+            }
+            if (lane.waiting_for_input) continue;
+            if (lane.issued < lane.batch_count && cycles >= lane.first_ready) {
+                const float gate = lane.inbuffer.front();
+                lane.inbuffer.pop_front();
+                const float up = lane.inbuffer.front();
+                lane.inbuffer.pop_front();
+                const float value = o_fn == SWIGLU
+                    ? gate * (1.0 / (1.0 + std::exp(-gate))) * up
+                    : 0.5f * gate * (1.0f + std::erf(gate / 1.41421356f)) * up;
+                output_table[0][lane.tasks.front()] = value;
+                lane.tasks.pop_front();
+                ++lane.issued;
+                lane.first_ready = cycles + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
+                ++terminal_outputs[mc];
+                --terminal_remaining;
+            }
+            if (lane.batch_count && lane.issued == lane.batch_count) {
+                lane.batch_count = 0;
+                lane.inbuffer.clear();
+            }
+        }
+    }
+    if (terminal_remaining == 0) {
+        for (int mc = 0; mc < MEM_NODES; ++mc)
+            std::cout << "TERMINAL_GATE layer=" << c_layer << " mc=" << dest_list[mc]
+                      << " lanes=" << terminal_lanes[mc].size()
+                      << " outputs=" << terminal_outputs[mc] << " finished=" << cycles << '\n';
+        terminal_gate_active = false;
+        cnoc_phase = 0;
+        for (auto* pe : MAC_list) { pe->selfstatus = 5; pe->send = 3; }
+    }
+}
+
 void MACnet::checkStatus()
 {
     if(readyflag == 0) 
@@ -657,7 +784,11 @@ void MACnet::checkStatus()
 
 #ifdef cNoC_MODE
         char l_type = this->cnnmodel->all_layer_type[c_layer];
-        if (l_type == 'm' || l_type == 'a' || l_type == 'w'|| l_type == 'g' || l_type == 't')
+        if (l_type == 'w' || l_type == 'g') {
+            mapping_table.clear();
+            mapping_table.resize(macNum);
+            start_terminal_gate();
+        } else if (l_type == 'm' || l_type == 'a' || l_type == 't')
         {
             this->cNoC_mapping(o_ch * o_x); 
         } else {
@@ -917,6 +1048,7 @@ void MACnet::checkStatus()
 void MACnet::runOneStep()
 {
 #ifdef cNoC_MODE
+    run_terminal_gate();
     if (cnoc_phase == 1 || cnoc_phase == 2) {
         inject_cNoC_traffic();
     }
@@ -960,20 +1092,6 @@ void MACnet::runOneStep()
                             // Add operation is linear, it has been computed in-transit in the router
                             this->output_table[0][out_idx] = tmpPacket->message.data[k * 2];
                         } 
-                        else if (tmpPacket->message.compute_op == SWIGLU || tmpPacket->message.compute_op == GEGLU) {
-                            // Non linear calculation at the terminal node (Terminal Node Concept)
-                            // We read the raw data transported by the cNoC and compute here
-                            float gate = tmpPacket->message.data[k * 2];
-                            float up = tmpPacket->message.data[k * 2 + 1];
-                            if (tmpPacket->message.compute_op == SWIGLU) {
-                                float silu = gate * (1.0f / (1.0f + std::exp(-gate)));
-                                this->output_table[0][out_idx] = silu * up;
-                            } else {
-                                // GeGLU Formula: 0.5 * gate * (1 + erf(gate / sqrt(2))) * up
-                                float gelu = 0.5f * gate * (1.0f + std::erf(gate / 1.41421356f));
-                                this->output_table[0][out_idx] = gelu * up;
-                            }
-                        }
                         else {
                             // MATMUL, LINEAR and ATTENTION
                             if (cnoc_current_chunk == 0) {

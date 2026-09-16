@@ -120,6 +120,23 @@ public:
 	// It generates the distribution packets (type 4) and computation packets (type 5)
     void inject_cNoC_traffic(); 
 
+    struct TerminalLane {
+        std::deque<int> tasks;
+        // Abstract MC receive queue, partitioned by execution unit; not SRAM.
+        std::deque<float> inbuffer;
+        size_t issued = 0;
+        size_t batch_count = 0;
+        Cycle first_ready = 0;
+        bool waiting_for_input = false;
+    };
+    std::vector<std::vector<TerminalLane>> terminal_lanes;
+    std::vector<std::uint64_t> terminal_outputs;
+    int terminal_remaining = 0;
+    bool terminal_gate_active = false;
+    Cycle terminal_dispatch_ready = 0;
+    void start_terminal_gate();
+    void run_terminal_gate();
+
 	~MACnet ();
 };
 

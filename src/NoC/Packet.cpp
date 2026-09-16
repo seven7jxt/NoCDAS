@@ -21,6 +21,11 @@ Packet::Packet(Message t_message, int router_num_x, int* NI_num)
   dest_convert(message.destination, router_num_x, NI_num);
   
   switch (t_type){
+    case 7: // Ordinary XY delivery of gate operands between MCs
+            length = data_length * DATA_BYTES + 2;
+            type = 0;
+            vnet = 0;
+            break;
     case 0: length = data_length * DATA_BYTES + 2;
             type = 0;
             vnet = 0;
@@ -115,6 +120,7 @@ void Packet::reset(Message t_message, int router_num_x, int* NI_num) {
     int data_length = message.data_length;
     
     switch (t_type){
+        case 7: length = data_length * DATA_BYTES + 2; type = 0; vnet = 0; break;
         case 0: length = data_length * DATA_BYTES + 2; type = 0; vnet = 0; break;
         case 1: length = data_length * DATA_BYTES + 2; type = 0; vnet = 0; break;
         case 2: length = data_length * DATA_BYTES + 2; type = 1; vnet = 0; break;
@@ -127,5 +133,3 @@ void Packet::reset(Message t_message, int router_num_x, int* NI_num) {
         length = ((length + FLIT_LENGTH - 1) / FLIT_LENGTH) * FLIT_LENGTH;
     }
 }
-
-

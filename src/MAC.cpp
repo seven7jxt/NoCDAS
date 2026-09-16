@@ -5,7 +5,7 @@
 
 #include "MAC.hpp"
 
-static_assert(PE_GATE_LATENCY > 0 && PE_GATE_II > 0, "Gate timing must be positive");
+static_assert(PE_GATE_LATENCY > 0, "Gate timing must be positive");
 static_assert(PE_GATE_BATCH_PAIRS > 0 && MAC_INPUT_SRAM_LIMIT >= 2,
               "Activation SRAM must hold a gate/up pair");
 
@@ -532,7 +532,7 @@ void MAC::runOneStep()
                     pending_acks = static_cast<int>(gate_tasks.size());
                     received_acks = 0;
                     selfstatus = 4;
-                    send = 1; // Early pipeline results may return before the tail finishes.
+                    send = 1; // Earlier scalar results may return before the batch finishes.
                     for (size_t index = 0; index < gate_tasks.size(); ++index) {
                         const float gate = infeature[2 * index];
                         const float up = infeature[2 * index + 1];
@@ -542,8 +542,7 @@ void MAC::runOneStep()
                         // Reuse consumed input space; output packets model timed egress.
                         infeature[index] = outfeature;
                         tmpm = gate_tasks[index];
-                        pecycle = cycles + (static_cast<Cycle>(PE_GATE_LATENCY) +
-                                  static_cast<Cycle>(index) * PE_GATE_II) * PE_FREQ_RATIO;
+                        pecycle = cycles + static_cast<Cycle>(index + 1) * PE_GATE_LATENCY * PE_FREQ_RATIO;
                         inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id],
                                packet_id + tmpm, id);
 #ifdef Countlatency

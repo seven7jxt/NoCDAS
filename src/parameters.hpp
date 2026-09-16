@@ -39,10 +39,12 @@
 
 #define MAX_CONTEXT_WINDOW (512 * QUANT_MULTIPLIER)				// Attention Score Cache
 
+#ifndef ROUTER_SRAM_LIMIT
 #ifdef cNoC_MODE
 	#define ROUTER_SRAM_LIMIT (16 * ELEMENT_PER_1KB)			// 16KiB cRouter SRAM
 #else
 	#define ROUTER_SRAM_LIMIT (16 * ELEMENT_PER_1KB)			// 16KiB cRouter SRAM
+#endif
 #endif
 
 #define NI_TX_FIFO_DEPTH (32 * QUANT_MULTIPLIER)   
@@ -186,17 +188,17 @@
 #define SQRT_LATENCY 20
 #define CORDIC_LATENCY 20
 
-// One scalar gate pipeline per PE; latencies are in PE clock cycles.
+// One serial scalar gate unit per PE; latency is in PE clock cycles.
 // GeGLU retains the same SFU approximation as SwiGLU.
-// II includes operand supply: II=1 assumes two scalar reads and one write per PE cycle.
 #ifndef PE_GATE_LATENCY
 #define PE_GATE_LATENCY (((4 + PE_NUM_OP - 1) / PE_NUM_OP) * MAC_LATENCY + EXP_LATENCY + DIV_LATENCY)
 #endif
-#ifndef PE_GATE_II
-#define PE_GATE_II 1
-#endif
 #ifndef PE_GATE_BATCH_PAIRS
 #define PE_GATE_BATCH_PAIRS (MAC_INPUT_SRAM_LIMIT / 2)
+#endif
+// Packet batching only: MC input queues are abstract, not capacity-limited SRAM.
+#ifndef CNOC_GATE_BATCH_PAIRS
+#define CNOC_GATE_BATCH_PAIRS PE_GATE_BATCH_PAIRS
 #endif
 
 // reserve string for input file paths
