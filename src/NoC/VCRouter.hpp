@@ -19,7 +19,7 @@ class RInPort;
 class ROutPort;
 class VCNetwork;
 
-extern unsigned int cycles;
+extern Cycle cycles;
 
 class VCRouter: public NRBase
 {
@@ -74,13 +74,12 @@ public:
   void writeKV(int index, float kv_value);
   void storeWeight(float weight_value);
 
-//   std::vector<unsigned int> mfu_occupied_until;
-  unsigned int mfu_occupied_until;
+  Cycle mfu_occupied_until;
   // True only while the MFU hold was caused by an attention packet waiting
   // for its local KV token, so retry cycles are not reported as MFU compute
   // contention as well.
   bool mfu_waiting_for_kv = false;
-  unsigned int kv_retry_until = 0;
+  Cycle kv_retry_until = 0;
   
   // List of indexes of output tasks assigned to this router
   std::vector<int> assigned_tasks;
@@ -106,8 +105,8 @@ public:
   int rr_port;
   int port_num;
 
-  int port_total_utilization;
-  int port_utilization_innet;
+  std::uint64_t port_total_utilization;
+  std::uint64_t port_utilization_innet;
 
   int rr_out_port;
 

@@ -157,7 +157,7 @@ int VCNetwork::port_num_f(int router){
   return 5;
 }
 
-void VCNetwork::port_utilization(int simulate_cycles){
+void VCNetwork::port_utilization(Cycle simulate_cycles){
   for(int i=0; i<routerNum; i++){
     cout.setf(ios::fixed);
     //cout << i << " ";
@@ -165,7 +165,7 @@ void VCNetwork::port_utilization(int simulate_cycles){
   }
 }
 
-void VCNetwork::port_utilization_innet(int simulate_cycles){
+void VCNetwork::port_utilization_innet(Cycle simulate_cycles){
   for(int i=0; i<routerNum; i++){
     cout.setf(ios::fixed);
     //cout << i << " ";

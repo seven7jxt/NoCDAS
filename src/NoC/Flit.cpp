@@ -9,7 +9,7 @@
 const int Flit::length = FLIT_LENGTH;
 std::vector<Flit*> Flit::free_pool;
 
-Flit::Flit(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, float t_cycles, int t_pid){
+Flit::Flit(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, Cycle t_cycles, int t_pid){
     id = t_id;
     type = t_type;
     vnet = t_vnet;
@@ -55,7 +55,7 @@ void Flit::update_data(int local_index, float new_val) {
     }
 }
 
-Flit* Flit::allocate(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, float t_cycles, int t_pid) {
+Flit* Flit::allocate(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, Cycle t_cycles, int t_pid) {
     if (!free_pool.empty()) {
         Flit* flit = free_pool.back();
         free_pool.pop_back();
@@ -69,7 +69,7 @@ void Flit::release(Flit* flit) {
     free_pool.push_back(flit);
 }
 
-void Flit::reset(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, float t_cycles, int t_pid) {
+void Flit::reset(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, Cycle t_cycles, int t_pid) {
     id = t_id;
     type = t_type;
     vnet = t_vnet;

@@ -19,8 +19,8 @@
 #include <fstream>
 #include <cmath>
 
-extern unsigned int cycles;
-extern vector<vector<int>> DNN_latency;
+extern Cycle cycles;
+extern vector<vector<std::int64_t>> DNN_latency;
 
 class FlitBuffer;
 class VCNetwork;
@@ -46,7 +46,7 @@ public:
   int vc_per_vn;
   int vc_priority_per_vn;
 
-  unsigned int NI_cycle_npooling;
+  Cycle NI_cycle_npooling;
 
   std::vector<PacketBuffer*> packetBuffer_list;
   std::vector<std::deque<Packet*> > packet_buffer_out;  // 0 request; 1 response
@@ -76,13 +76,13 @@ public:
 
   int num_flit;
 
-  int total_delay;
+  std::uint64_t total_delay;
   int total_num;
-  int total_delay_URS;
+  std::uint64_t total_delay_URS;
   int total_num_URS;
 
-  static int worst_LCS;
-  static int worst_URS;
+  static std::int64_t worst_LCS;
+  static std::int64_t worst_URS;
 
   static int URS_delay_distribution[DISTRIBUTION_NUM];
   static int LCS_delay_distribution[DISTRIBUTION_NUM];

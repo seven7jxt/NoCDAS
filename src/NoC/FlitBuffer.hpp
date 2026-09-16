@@ -24,7 +24,7 @@ public:
   void get_credit();
 
   int credit_delay;
-  std::deque<unsigned int> credit_return_queue;
+  std::deque<Cycle> credit_return_queue;
   void update_credits();
 
   ~FlitBuffer();

@@ -15,8 +15,8 @@ int NI::count_input=0;
 int NI::LCS_delay_distribution[DISTRIBUTION_NUM]={0};
 int NI::URS_delay_distribution[DISTRIBUTION_NUM]={0};
 
-int NI::worst_LCS = 0;
-int NI::worst_URS = 0;
+std::int64_t NI::worst_LCS = 0;
+std::int64_t NI::worst_URS = 0;
 
 
 
@@ -744,13 +744,16 @@ void NI::inputCheck(){
               }
 
 
-              int delay = cycles - packet->send_out_time - (abs(packet->message.NI_id/X_NUM-packet->destination[0])+abs(packet->message.NI_id%X_NUM-packet->destination[1])+1)*3 - 2 - ((packet->length-1)/FLIT_LENGTH+1);
+              std::int64_t delay = static_cast<std::int64_t>(cycles - packet->send_out_time) - (abs(packet->message.NI_id/X_NUM-packet->destination[0])+abs(packet->message.NI_id%X_NUM-packet->destination[1])+1)*3 - 2 - ((packet->length-1)/FLIT_LENGTH+1);
 
             // cNoC packets (type 4/5) have additional latency from in-transit computation and 
             // do not respect the lower bound of pure XY routing: exclude them from the assert.
-            if (packet->type != 4 && packet->type != 5) {
+            if (packet->message.type != 4 && packet->message.type != 5) {
                 assert(delay >= 0);
             }
+            // A source-routed compute packet can violate the XY lower bound;
+            // never use its negative excess delay as a histogram index.
+            delay = std::max<std::int64_t>(0, delay);
 
 #ifdef STD_LATENCY
           if(packet->signal->test_tag == 1){
@@ -811,4 +814,3 @@ NI::~NI (){
   delete in_port;
   delete out_port;
 }
-

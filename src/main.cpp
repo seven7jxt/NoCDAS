@@ -29,11 +29,11 @@ class VCNetwork;
 int packet_id;
 
 // Statistics
-vector<vector<int>> DNN_latency;
+vector<vector<std::int64_t>> DNN_latency;
 
 
 // DNN
-unsigned int cycles;
+Cycle cycles;
 int ch;
 int layer;
 

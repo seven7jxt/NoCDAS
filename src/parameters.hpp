@@ -6,6 +6,8 @@
 #ifndef PARAMETERS_HPP_
 #define PARAMETERS_HPP_
 
+#include "SimulationTime.hpp"
+
 #define DEFAULT_NNMODEL_FILENAME    "./src/input/lm_transformer.txt"
 #define DEFAULT_NNWEIGHT_FILENAME   "./src/input/lm_weight.txt"
 #define DEFAULT_NNINPUT_FILENAME    "./src/input/lm_input.txt"

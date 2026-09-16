@@ -23,9 +23,9 @@ using namespace std;
 
 extern int packet_id;
 
-extern unsigned int cycles;
+extern Cycle cycles;
 
-extern vector<vector<int>> DNN_latency;
+extern vector<vector<std::int64_t>> DNN_latency;
 
 // NoC
 class VCNetwork;
@@ -102,7 +102,7 @@ public:
     int causal_mask_flag;
 
 	// for print
-	vector<int> Layer_latency;
+	vector<Cycle> Layer_latency;
     
     // 0 = Idle, 1 = Weights distribution, 2 = In-Transit computation, 3 = wait for results
     int cnoc_phase;

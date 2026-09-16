@@ -18,7 +18,7 @@
 #include <map>
 
 extern std::ofstream router_monitor;
-extern unsigned int cycles;
+extern Cycle cycles;
 
 class VCRouter;
 class NI;
@@ -56,10 +56,10 @@ public:
   int port_num_f(int router);
 
   // port_utilization in the VC net, for all out ports including NIs
-  void port_utilization(int simulate_cycles);
+  void port_utilization(Cycle simulate_cycles);
 
   // port_utilization in the VC net, only consider routers
-  void port_utilization_innet(int simulate_cycles);
+  void port_utilization_innet(Cycle simulate_cycles);
 
 
   void show_LCS_distribution();

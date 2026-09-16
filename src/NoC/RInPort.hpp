@@ -22,7 +22,7 @@ class FlitBuffer;
 class VCRouter;
 class Link;
 
-extern unsigned int cycles;
+extern Cycle cycles;
 
 class RInPort : public Port{
 public:

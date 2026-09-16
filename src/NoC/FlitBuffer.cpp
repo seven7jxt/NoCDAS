@@ -8,7 +8,7 @@
 #include "../parameters.hpp"
 #include <iostream>
 
-extern unsigned int cycles;
+extern Cycle cycles;
 
 FlitBuffer::FlitBuffer(int t_vc, int t_vnet, int t_id, int t_depth){
   id = t_id;
@@ -16,6 +16,7 @@ FlitBuffer::FlitBuffer(int t_vc, int t_vnet, int t_id, int t_depth){
   vc = t_vc;
   cur_flit_num = 0;
   used_credit = 0;
+  credit_delay = 0;
   depth = t_depth;
 }
 
@@ -87,6 +88,4 @@ FlitBuffer::~FlitBuffer(){
     Flit::release(flit);
   }
 }
-
-
 

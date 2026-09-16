@@ -8,11 +8,12 @@
 
 #include <vector>
 #include <stdio.h>
+#include "../SimulationTime.hpp"
 
 struct Message{
   int NI_id;
   int mac_id;
-  int out_cycle;
+  Cycle out_cycle;
   int slave_id;
   int sequence_id;
   int type;
@@ -53,8 +54,8 @@ public:
   int vnet;
   int destination[3];               // x, y, output port of the router
 
-  float send_out_time;              // time of packet sent from PE
-  float in_net_time;                // time of packet insert in to the NoC
+  Cycle send_out_time;              // time of packet sent from PE
+  Cycle in_net_time;                // time of packet insert in to the NoC
 
   void dest_convert(int dest, int router_num_x, int* NI_num);
   int get_next_router_dest();       // source routing helper

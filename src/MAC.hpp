@@ -55,8 +55,8 @@
 using namespace std;
 
 extern int packet_id;
-extern unsigned int cycles;
-extern vector<vector<int>> DNN_latency;
+extern Cycle cycles;
+extern vector<vector<std::int64_t>> DNN_latency;
 
 class MACnet;
 class Packet;
@@ -71,7 +71,7 @@ class MAC
 	MACnet* net;
 	int id;
 	int fn;
-	int pecycle;
+	Cycle pecycle;
 	int selfstatus;
 	int request;
 	int tmp_request;
