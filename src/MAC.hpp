@@ -79,6 +79,9 @@ class MAC
 	// Baseline MatMul/Linear tile state. A tile reuses one activation vector
 	// across several consecutive output rows.
 	bool use_matmul_tiling;
+
+    bool use_gate_batch = false;
+    std::vector<int> gate_tasks;
 	bool matmul_activation_valid;
 	int matmul_activation_row;
 	int matmul_requested_row;

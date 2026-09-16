@@ -33,7 +33,9 @@
 // MAC Local SRAM Limits (in number of floats, 2048 = 8 KB)
 // The comment below assume quantization is enabled
 #define MAC_WEIGHT_SRAM_LIMIT (64 * ELEMENT_PER_1KB)		// 64KiB weight SRAM
+#ifndef MAC_INPUT_SRAM_LIMIT
 #define MAC_INPUT_SRAM_LIMIT (64 * ELEMENT_PER_1KB)			// 64KiB input SRAM
+#endif
 
 #define MAX_CONTEXT_WINDOW (512 * QUANT_MULTIPLIER)				// Attention Score Cache
 
@@ -183,6 +185,19 @@
 #define EXP_LATENCY 12
 #define SQRT_LATENCY 20
 #define CORDIC_LATENCY 20
+
+// One scalar gate pipeline per PE; latencies are in PE clock cycles.
+// GeGLU retains the same SFU approximation as SwiGLU.
+// II includes operand supply: II=1 assumes two scalar reads and one write per PE cycle.
+#ifndef PE_GATE_LATENCY
+#define PE_GATE_LATENCY (((4 + PE_NUM_OP - 1) / PE_NUM_OP) * MAC_LATENCY + EXP_LATENCY + DIV_LATENCY)
+#endif
+#ifndef PE_GATE_II
+#define PE_GATE_II 1
+#endif
+#ifndef PE_GATE_BATCH_PAIRS
+#define PE_GATE_BATCH_PAIRS (MAC_INPUT_SRAM_LIMIT / 2)
+#endif
 
 // reserve string for input file paths
 struct GlobalParams {
