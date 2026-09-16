@@ -379,26 +379,9 @@ int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
                 break;
             }
             case SWIGLU:
-            {
-                // int num_tasks = assigned_tasks.size();
-                // for (int t = 0; t < num_tasks; t++) {
-                //     int task_id = assigned_tasks[t];
-                //     int required_flit_offset = task_id * 2;
-                    
-                //     if (required_flit_offset >= t_flit->global_data_offset && 
-                //         required_flit_offset + 1 < t_flit->global_data_offset + payload_size) {
-                        
-                //         int local_offset = required_flit_offset - t_flit->global_data_offset;
-                //         float gate = t_flit->get_data(local_offset);
-                //         float up = t_flit->get_data(local_offset + 1);
-                        
-                //         float silu = gate * (1.0f / (1.0f + std::exp(-gate)));
-                        
-                //         t_flit->packet->message.data[required_flit_offset] = silu * up;
-                //     }
-                // }
+            case GEGLU:
+                // Forward gate/up operands; the terminal node applies the nonlinear gate.
                 break;
-            }
             case ATTENTION:
             {
                 // The packet data and partial sums are complete only at the
