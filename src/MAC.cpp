@@ -818,9 +818,11 @@ void MAC::runOneStep()
                     calctime = vector_ops * MAC_LATENCY + SQRT_LATENCY + DIV_LATENCY;
                 }
                 else if (fn == SWIGLU || fn == GEGLU) { 
-                    // SwiGLU (Exp, Div, 2 MAC)
-                    int vector_ops = (4 * m_size) / PE_NUM_OP + 1;
-                    calctime = vector_ops * MAC_LATENCY + EXP_LATENCY + DIV_LATENCY;
+                    // Each task consumes one gate/up pair, not the m_size vector.
+                    // Retain the existing fixed EXP/DIV approximation for both gates.
+                    const int element_ops = 4;
+                    const int element_cycles = (element_ops + PE_NUM_OP - 1) / PE_NUM_OP;
+                    calctime = element_cycles * MAC_LATENCY + EXP_LATENCY + DIV_LATENCY;
                 }
                 else if (fn == ROPE) { 
                     // RoPE: the MAC is computing a single element (idx), not the entire m_size vector.
