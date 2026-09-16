@@ -87,6 +87,8 @@ public:
   // Multi-way Function Unit (MFU) functions
   // Returns the number of MatMul/Linear MACs actually executed for this flit.
   int computeInTransit(Flit* t_flit, int port_idx);
+  std::vector<int> getAttentionPhysicalSlots(Flit* t_flit, int router_idx,
+                                             int path_length, int k_dim) const;
   // Packet-level attention completes on the tail; returns its MFU service cycles.
   int computeAttention(Flit* t_flit);
   void processDistributionPacket(Flit* t_flit);

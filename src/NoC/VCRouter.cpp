@@ -221,6 +221,59 @@ void VCRouter::processDistributionPacket(Flit* t_flit) {
     }
 }
 
+std::vector<int> VCRouter::getAttentionPhysicalSlots(Flit* t_flit,
+                                                     int router_idx,
+                                                     int path_length,
+                                                     int k_dim) const {
+    std::vector<int> valid_physical_slots;
+    if (router_idx < 0 || path_length <= 0 || k_dim <= 0) {
+        return valid_physical_slots;
+    }
+
+    const int SINK_TOKENS = 4;
+    const int floats_per_token = k_dim * 2;
+    const int max_tokens_in_sram = ROUTER_SRAM_LIMIT / floats_per_token;
+    if (max_tokens_in_sram <= 0) {
+        return valid_physical_slots;
+    }
+
+    const int current_query_y = t_flit->packet->message.sequence_id;
+    int current_local_count = 0;
+    for (int y = 0; y <= current_query_y; y++) {
+        if (y % path_length == router_idx) current_local_count++;
+    }
+
+    int local_seq_id = 0;
+    for (int y = 0; y <= current_query_y; y++) {
+        if (y % path_length != router_idx) continue;
+
+        bool retained = true;
+        if (current_local_count > max_tokens_in_sram) {
+            const int max_recent = max_tokens_in_sram - SINK_TOKENS;
+            if (local_seq_id >= SINK_TOKENS &&
+                local_seq_id < current_local_count - max_recent) {
+                retained = false;
+            }
+        }
+
+        if (retained) {
+            int physical_slot;
+            if (local_seq_id < max_tokens_in_sram) {
+                physical_slot = local_seq_id;
+            } else if (max_tokens_in_sram > SINK_TOKENS) {
+                physical_slot = SINK_TOKENS +
+                    ((local_seq_id - SINK_TOKENS) % (max_tokens_in_sram - SINK_TOKENS));
+            } else {
+                physical_slot = std::max(0, max_tokens_in_sram - 1);
+            }
+            valid_physical_slots.push_back(physical_slot);
+        }
+        local_seq_id++;
+    }
+
+    return valid_physical_slots;
+}
+
 int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
     int this_router_id = id[0] * X_NUM + id[1];
     int matmul_macs = 0;
@@ -381,46 +434,8 @@ int VCRouter::computeInTransit(Flit* t_flit, int port_idx) {
                     vc_state.running_sum = t_flit->packet->message.running_sum;
                 }
 
-                int current_query_y = t_flit->packet->message.sequence_id;
-                const int SINK_TOKENS = 4;
-                int floats_per_token = k_dim * 2;
-                int max_tokens_in_sram = ROUTER_SRAM_LIMIT / floats_per_token;
-                
-                int current_local_count = 0;
-                for (int y = 0; y <= current_query_y; y++) {
-                    if (y % N == router_idx) current_local_count++;
-                }
-
-                std::vector<int> valid_physical_slots;
-                int local_seq_id = 0;
-                
-                for (int y = 0; y <= current_query_y; y++) {
-                    if (y % N == router_idx) {
-                        bool retained = true;
-                        
-                        if (current_local_count > max_tokens_in_sram) {
-                            int max_recent = max_tokens_in_sram - SINK_TOKENS;
-                            if (local_seq_id >= SINK_TOKENS && local_seq_id < current_local_count - max_recent) {
-                                retained = false; 
-                            }
-                        }
-
-                        if (retained) {
-                            int physical_slot;
-                            if (local_seq_id < max_tokens_in_sram) {
-                                physical_slot = local_seq_id;
-                            } else {
-                                if (max_tokens_in_sram > SINK_TOKENS) {
-                                    physical_slot = SINK_TOKENS + ((local_seq_id - SINK_TOKENS) % (max_tokens_in_sram - SINK_TOKENS));
-                                } else {
-                                    physical_slot = std::max(0, max_tokens_in_sram - 1);
-                                }
-                            }
-                            valid_physical_slots.push_back(physical_slot);
-                        }
-                        local_seq_id++;
-                    }
-                }
+                std::vector<int> valid_physical_slots =
+                    getAttentionPhysicalSlots(t_flit, router_idx, N, k_dim);
                 
                 int effective_tokens = valid_physical_slots.size();
                 if (effective_tokens == 0) break;
@@ -519,8 +534,8 @@ int VCRouter::computeAttention(Flit* t_flit) {
     const int k_dim = t_flit->packet->message.k_dim > 0
         ? t_flit->packet->message.k_dim : q_dim;
     const int n_heads = std::max(1, t_flit->packet->message.n_heads);
-    const int local_tokens = k_dim > 0
-        ? static_cast<int>(local_kv_cache.size()) / (2 * k_dim) : 0;
+    const int local_tokens = static_cast<int>(
+        getAttentionPhysicalSlots(t_flit, router_idx, path_length, k_dim).size());
 
     int delay = 1;
     if (local_tokens > 0) {
