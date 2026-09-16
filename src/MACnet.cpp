@@ -346,17 +346,27 @@ void MACnet::cNoC_mapping(int task_num) {
         }
     }
 
-    int total_weight_per_task = this->weight_table.empty() ? 1 : this->weight_table[0].size();
-    int max_tasks_per_router = avail_routers.size() > 0 ? (task_num / avail_routers.size()) + 1 : 1;
-    int total_sram_needed_per_router = max_tasks_per_router * total_weight_per_task;
-
-    if (total_sram_needed_per_router > ROUTER_SRAM_LIMIT) {
-        cnoc_total_chunks = (total_sram_needed_per_router / ROUTER_SRAM_LIMIT) + 1;
-        cnoc_chunk_size = (total_weight_per_task / cnoc_total_chunks) + 1;
-    } else {
-        cnoc_total_chunks = 1;
-        cnoc_chunk_size = total_weight_per_task;
+    const int total_weight_per_task = this->weight_table.empty() ? 1 : this->weight_table[0].size();
+    if (avail_routers.empty() || task_num <= 0 || total_weight_per_task <= 0) {
+        std::cerr << "FATAL ERROR: Invalid cNoC mapping at layer " << c_layer
+                  << ": routers=" << avail_routers.size() << " tasks=" << task_num
+                  << " row-elements=" << total_weight_per_task << std::endl;
+        exit(EXIT_FAILURE);
     }
+    const int router_count = static_cast<int>(avail_routers.size());
+    const int max_tasks_per_router = task_num / router_count + (task_num % router_count != 0);
+    // Bound each row slice first: rounding up the slice after estimating the
+    // number of chunks can make tasks * slice exceed the router's SRAM.
+    const int max_row_slice = ROUTER_SRAM_LIMIT / max_tasks_per_router;
+    if (max_row_slice <= 0) {
+        std::cerr << "FATAL ERROR: cNoC SRAM cannot hold one weight element per task"
+                  << " at layer " << c_layer << ": tasks-per-router=" << max_tasks_per_router
+                  << " limit-elements=" << ROUTER_SRAM_LIMIT << std::endl;
+        exit(EXIT_FAILURE);
+    }
+    cnoc_chunk_size = std::min(total_weight_per_task, max_row_slice);
+    cnoc_total_chunks = total_weight_per_task / cnoc_chunk_size
+                      + (total_weight_per_task % cnoc_chunk_size != 0);
     cnoc_current_chunk = 0;
 
     for (int t = 0; t < task_num; t++) {
