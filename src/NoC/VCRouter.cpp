@@ -532,7 +532,11 @@ int VCRouter::computeAttention(Flit* t_flit) {
         // This is the work performed by this router's local reduction.  The
         // score scale is a configured multiply; final normalization is a
         // single vector operation at the last reduction router.
-        delay = mac_cycles * MAC_LATENCY + exp_ops * EXP_LATENCY;
+        // One EXP pipeline, fixed II=1. Once the local maximum and incoming
+        // reduction state are available, these exponentials are independent.
+        // Pay pipeline latency once per batch; retain router-wide MFU blocking.
+        const int exp_cycles = EXP_LATENCY + exp_ops - 1;
+        delay = mac_cycles * MAC_LATENCY + exp_cycles;
     }
 
     if (router_idx == path_length - 1) {
