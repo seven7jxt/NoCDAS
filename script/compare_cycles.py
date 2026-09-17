@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 TOTAL_RE = re.compile(r"All finished! at cycle\s+(\d+)")
+FINAL_LAYER_RE = re.compile(r"All finished! at cycle\s+(\d+)\s*\|\s*Layer\s+(\d+)\b")
 LAYER_RE = re.compile(r"Layer finished\s+(\d+) at cycle\s+(\d+)")
 MODEL_LAYER_RE = re.compile(
     r"^\s*(\d+)\s*\|\s*([^|]+?)\s*\|", re.MULTILINE
@@ -28,6 +29,9 @@ def parse_log(path: Path) -> Run:
     total_matches = TOTAL_RE.findall(text)
     if not total_matches:
         raise ValueError("total cycle marker was not found")
+    if len(total_matches) != 1:
+        raise ValueError("multiple completed runs in one log")
+    total = int(total_matches[0])
 
     layer_types = {
         int(layer): layer_type.strip()
@@ -35,10 +39,29 @@ def parse_log(path: Path) -> Run:
     }
     cumulative: dict[int, int] = {}
     for layer, cycle in LAYER_RE.findall(text):
+        if int(layer) in cumulative:
+            raise ValueError(f"duplicate cycle marker for layer {layer}")
         cumulative[int(layer)] = int(cycle)
 
+    final_matches = FINAL_LAYER_RE.findall(text)
+    if final_matches:
+        cycle, layer = map(int, final_matches[0])
+        if layer in cumulative and cumulative[layer] != cycle:
+            raise ValueError(f"conflicting final cycle for layer {layer}")
+        cumulative[layer] = cycle
+
+    expected = {layer for layer, kind in layer_types.items() if kind.lower() != "input"}
+    # Legacy logs omit the final layer ID. Infer it only when the topology
+    # identifies exactly one missing layer, and it is the last one.
+    missing = expected - cumulative.keys()
+    if not final_matches and expected and missing == {max(expected)}:
+        cumulative[max(expected)] = total
+    if expected and set(cumulative) != expected:
+        raise ValueError("layer cycle markers do not match model topology")
     if not cumulative:
         raise ValueError("no layer cycle markers were found")
+    if cumulative[max(cumulative)] != total:
+        raise ValueError("last layer cycle does not match total; final layer may be missing")
 
     previous = 0
     layers: dict[str, int] = {}
@@ -50,7 +73,7 @@ def parse_log(path: Path) -> Run:
         layers[layer_type] = layers.get(layer_type, 0) + duration
         previous = cumulative[layer]
 
-    return Run(total=int(total_matches[-1]), layers=layers)
+    return Run(total=total, layers=layers)
 
 
 def pair_logs() -> tuple[Path, Path, list[str]]:
