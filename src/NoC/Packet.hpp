@@ -41,6 +41,9 @@ struct Message{
 
   int chunk_offset = 0;
   int chunk_row_size = 0;
+  // Output tiling uses batch-local task indices in the compute payload.
+  int output_offset = 0;
+  int output_count = 0; // Zero retains the legacy full-output/input-slice mode.
 };
 
 class Packet

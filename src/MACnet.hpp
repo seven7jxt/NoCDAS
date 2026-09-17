@@ -114,6 +114,11 @@ public:
 	int cnoc_current_chunk = 0;
     int cnoc_total_chunks = 1;
     int cnoc_chunk_size = 0;
+    bool cnoc_output_tiling = false;
+    int cnoc_output_batch_size = 0;
+    int cnoc_output_offset = 0;
+    int cnoc_output_count = 0;
+    void map_cnoc_output_chunk();
     
 	// Mapping of weights to router for preparing the distribution phase
     void cNoC_mapping(int task_num);

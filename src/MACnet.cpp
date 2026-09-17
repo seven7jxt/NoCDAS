@@ -420,6 +420,25 @@ void MACnet::cNoC_mapping(int task_num) {
         exit(EXIT_FAILURE);
     }
     const int router_count = static_cast<int>(avail_routers.size());
+    cnoc_output_tiling = o_fn == MATMUL && total_weight_per_task <= ROUTER_SRAM_LIMIT;
+    cnoc_output_offset = 0;
+    cnoc_output_count = 0;
+    cnoc_output_batch_size = 0;
+    if (cnoc_output_tiling) {
+        const int rows_per_router = ROUTER_SRAM_LIMIT / total_weight_per_task;
+        cnoc_output_batch_size = std::min(task_num, router_count * rows_per_router);
+        cnoc_chunk_size = total_weight_per_task;
+        cnoc_total_chunks = (task_num + cnoc_output_batch_size - 1) / cnoc_output_batch_size;
+        cnoc_current_chunk = 0;
+        map_cnoc_output_chunk();
+        std::cout << "CNOC_TILING layer=" << c_layer << " direction=output"
+                  << " row-elements=" << total_weight_per_task
+                  << " outputs-per-batch=" << cnoc_output_batch_size
+                  << " batches=" << cnoc_total_chunks
+                  << " router-sram-elements=" << ROUTER_SRAM_LIMIT << '\n';
+        cnoc_phase = 1;
+        return;
+    }
     const int max_tasks_per_router = task_num / router_count + (task_num % router_count != 0);
     // Bound each row slice first: rounding up the slice after estimating the
     // number of chunks can make tasks * slice exceed the router's SRAM.
@@ -434,6 +453,12 @@ void MACnet::cNoC_mapping(int task_num) {
     cnoc_total_chunks = total_weight_per_task / cnoc_chunk_size
                       + (total_weight_per_task % cnoc_chunk_size != 0);
     cnoc_current_chunk = 0;
+    if (o_fn == MATMUL)
+        std::cout << "CNOC_TILING layer=" << c_layer << " direction=input-fallback"
+                  << " row-elements=" << total_weight_per_task
+                  << " slice-elements=" << cnoc_chunk_size
+                  << " batches=" << cnoc_total_chunks
+                  << " router-sram-elements=" << ROUTER_SRAM_LIMIT << '\n';
 
     for (int t = 0; t < task_num; t++) {
         int r_idx = t % avail_routers.size();
@@ -446,6 +471,24 @@ void MACnet::cNoC_mapping(int task_num) {
 
     std::sort(cnoc_compute_path.begin(), cnoc_compute_path.end(), serpentine_sort);
     cnoc_phase = 1; 
+}
+
+void MACnet::map_cnoc_output_chunk() {
+    cnoc_output_offset = cnoc_current_chunk * cnoc_output_batch_size;
+    cnoc_output_count = std::min(cnoc_output_batch_size, o_x - cnoc_output_offset);
+    cnoc_compute_path.clear();
+    std::vector<int> routers;
+    for (int r = 0; r < TOT_NUM; ++r) {
+        vcNetwork->router_list[r]->assigned_tasks.clear();
+        if (!contains(dest_list, r)) routers.push_back(r);
+    }
+    // Task IDs are local to this batch; the MC restores the global offset.
+    for (int task = 0; task < cnoc_output_count; ++task) {
+        auto* router = vcNetwork->router_list[routers[task % routers.size()]];
+        if (router->assigned_tasks.empty()) cnoc_compute_path.push_back(routers[task % routers.size()]);
+        router->assigned_tasks.push_back(task);
+    }
+    std::sort(cnoc_compute_path.begin(), cnoc_compute_path.end(), serpentine_sort);
 }
 
 void MACnet::inject_cNoC_traffic() {
@@ -522,9 +565,10 @@ void MACnet::inject_cNoC_traffic() {
                 auto router = this->vcNetwork->router_list[router_id];
                 if (!this->weight_table.empty()) {
                     for (int task_idx : router->assigned_tasks) {
-                        int w_idx = task_idx % this->weight_table.size();
+                        int w_idx = cnoc_output_tiling ? cnoc_output_offset + task_idx
+                            : task_idx % this->weight_table.size();
                         
-                        int start_idx = cnoc_current_chunk * cnoc_chunk_size;
+                        int start_idx = cnoc_output_tiling ? 0 : cnoc_current_chunk * cnoc_chunk_size;
                         int end_idx = std::min((int)this->weight_table[w_idx].size(), start_idx + cnoc_chunk_size);
                         
                         if (start_idx < this->weight_table[w_idx].size()) {
@@ -653,31 +697,34 @@ void MACnet::inject_cNoC_traffic() {
 
             if (o_fn == MATMUL || o_fn == ATTENTION) {
                 comp_msg.psum_offset = comp_msg.data.size();
+                const int result_count = cnoc_output_tiling ? cnoc_output_count : o_x;
+                comp_msg.output_offset = cnoc_output_tiling ? cnoc_output_offset : 0;
+                comp_msg.output_count = cnoc_output_tiling ? cnoc_output_count : 0;
                 if (o_fn == ATTENTION) {
                     comp_msg.k_dim = cnnmodel->all_layer_size[c_layer][2];
                 }          
 #if USE_BIAS
                 if (o_fn == MATMUL) {
-                    for(size_t b = 0; b < o_x; b++) {
-                        if (cnoc_current_chunk == 0) {
-                            comp_msg.data.push_back(this->weight_table[b].back()); 
+                    for(int b = 0; b < result_count; b++) {
+                        if (cnoc_output_tiling || cnoc_current_chunk == 0) {
+                            comp_msg.data.push_back(this->weight_table[comp_msg.output_offset + b].back());
                         } else {
                             comp_msg.data.push_back(0.0f); 
                         }
                     }
                 } else {
-                    comp_msg.data.insert(comp_msg.data.end(), o_x, 0.0f); 
+                    comp_msg.data.insert(comp_msg.data.end(), result_count, 0.0f);
                 }
 #else
-                comp_msg.data.insert(comp_msg.data.end(), o_x, 0.0f); 
+                comp_msg.data.insert(comp_msg.data.end(), result_count, 0.0f);
 #endif
             } else {
                 comp_msg.psum_offset = 0;
             }
             
-            comp_msg.chunk_offset = cnoc_current_chunk * cnoc_chunk_size; 
+            comp_msg.chunk_offset = cnoc_output_tiling ? 0 : cnoc_current_chunk * cnoc_chunk_size;
             int total_w_len = this->weight_table.empty() ? 1 : this->weight_table[0].size();
-            int current_start = cnoc_current_chunk * cnoc_chunk_size;
+            int current_start = comp_msg.chunk_offset;
             int current_end = std::min(total_w_len, current_start + cnoc_chunk_size);
             comp_msg.chunk_row_size = current_end - current_start;
             
@@ -1129,8 +1176,11 @@ void MACnet::runOneStep()
                 // normalization.  Do not divide the result again at memory.
                 
                 // Saving data by extracting from 'data'
-                for(size_t k = 0; k < o_x; k++) {
-                    int out_idx = y * o_x + k;                                                              
+                const bool output_tile = tmpPacket->message.compute_op == MATMUL &&
+                                         tmpPacket->message.output_count > 0;
+                const int result_count = output_tile ? tmpPacket->message.output_count : o_x;
+                for(int k = 0; k < result_count; k++) {
+                    int out_idx = y * o_x + (output_tile ? tmpPacket->message.output_offset : 0) + k;
                     if (out_idx < this->output_table[0].size()) {
                         
                         if (tmpPacket->message.compute_op == ADD) {
@@ -1139,7 +1189,7 @@ void MACnet::runOneStep()
                         } 
                         else {
                             // MATMUL, LINEAR and ATTENTION
-                            if (cnoc_current_chunk == 0) {
+                            if (output_tile || cnoc_current_chunk == 0) {
                                 this->output_table[0][out_idx] = tmpPacket->message.data[p_offset + k]; 
                             } else {
                                 this->output_table[0][out_idx] += tmpPacket->message.data[p_offset + k]; 
@@ -1154,6 +1204,7 @@ void MACnet::runOneStep()
                     cnoc_current_chunk++;
                     
                     if (cnoc_current_chunk < cnoc_total_chunks) {
+                        if (cnoc_output_tiling) map_cnoc_output_chunk();
                         cnoc_phase = 1; 
                     } else {
                         cnoc_phase = 0; 
