@@ -156,10 +156,10 @@ def build_config(exp):
         # Mistral 7B architectural dimensions, with depth reduced for simulation.
         # The repository's 8192-token vocabulary is retained to keep generation
         # and simulator input conventions consistent with the other workloads.
-        exp_name = "Real-scale Mistral structure (1 layer, seq_len=64)"
+        exp_name = "Real-scale Mistral structure (4 layer, seq_len=64)"
         config.hidden_size = 4096
         config.intermediate_size = 14336
-        config.num_hidden_layers = 1
+        config.num_hidden_layers = 4
         config.num_attention_heads = 32
         config.num_key_value_heads = 8
         config.head_dim = config.hidden_size // config.num_attention_heads

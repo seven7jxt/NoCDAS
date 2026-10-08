@@ -125,7 +125,7 @@ def main():
             # (DRAM or HBM) and test the numerical stability of the system over long computation paths.
             # Total parameters = 365,238,144 -> 0.36 B
         apply_quantization = True
-        SIMULATION_SEQ_LEN = 64
+        SIMULATION_SEQ_LEN = 256
 
     print(f"\n[INFO] Generating Qwen architecture...")
     model = AutoModelForCausalLM.from_config(config, dtype=torch.float32)

@@ -151,11 +151,11 @@ def build_config(exp):
         # This is a one-layer architectural slice of Llama-2-7B.  The
         # generator still creates random weights, as do the other experiments;
         # it does not download pretrained 7B checkpoint.
-        exp_name = "Llama-2-7B architecture (1 layer, seq_len=64)"
+        exp_name = "Llama-2-7B architecture (4 layers, seq_len=64)"
         config.vocab_size = 8192
         config.hidden_size = 4096
         config.intermediate_size = 11008
-        config.num_hidden_layers = 1
+        config.num_hidden_layers = 4
         config.num_attention_heads = 32
         config.num_key_value_heads = 32
         config.max_position_embeddings = 4096
