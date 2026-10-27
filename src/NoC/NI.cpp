@@ -4,6 +4,9 @@
  */
 
 #include "NI.hpp"
+#include "NIPacketizer.hpp"
+#include "NIPacketAssembler.hpp"
+#include <stdexcept>
 #include "../parameters.hpp"
 
 NI::NI (int t_id, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth, int* t_NI_num)
@@ -71,177 +74,9 @@ NI::NI (int t_id, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_v
 }
 
 
-bool NI::flitize(Packet* packet, int vn){
-  int base;
-  //added to replace global packet_id
-  int pid = packet->message.signal_id;
-  // for priority packet with individual VCs
-  if(packet->message.QoS == 3){
-      base = vn_num*vc_per_vn+vn*vc_priority_per_vn;
-      for(int i=base; i<base+vc_priority_per_vn; i++){
-	  if(state[i] == 0){  // idle
-	      //packet_id++;  // if success
-	      int length = (packet->length-1)/FLIT_LENGTH+1; //round up
-	      packet->send_out_time = context.cycles;
-	      num_flit += length;
-	      if(length == 1){
-		  Flit* flit = Flit::allocate(0, 10, vn, i, packet, context.cycles, pid);
-		  flit->trace_node.push_back(NI::id);
-		  flit->trace_time.push_back(context.cycles);
-		  flit->packet->in_net_time = context.cycles;
-		  buffer_list[i]->enqueue(flit);
-	      }else{
-		  for(int id=0; id<length; id++){
-		      if(id == 0){
-			  Flit* flit = Flit::allocate(id, 0, vn, i, packet, context.cycles, pid);
-			  flit->trace_node.push_back(NI::id);
-			  flit->trace_time.push_back(context.cycles);
-			  flit->packet->in_net_time = context.cycles;
-			  buffer_list[i]->enqueue(flit);
-		      }else
-			if(id == length-1){
-			    Flit* flit = Flit::allocate(id, 1, vn, i, packet, context.cycles, pid);
-			    flit->trace_node.push_back(NI::id);
-			    flit->trace_time.push_back(context.cycles);
-			    flit->packet->in_net_time = context.cycles;
-			    buffer_list[i]->enqueue(flit);
-			}else{
-			    Flit* flit = Flit::allocate(id, 2, vn, i, packet, context.cycles, pid);
-			    flit->trace_node.push_back(NI::id);
-			    flit->trace_time.push_back(context.cycles);
-			    flit->packet->in_net_time = context.cycles;
-			    buffer_list[i]->enqueue(flit);
-			}
-		  }
-	      }
-	      state[i] = 1;  // wait for VC allocation
-	      return true;
-	  }
-      }
-      return false;
-  }
-
-  // for normal packet or priority packet with shared VCs
-  else{
-#ifdef SHARED_PRI
-      if(packet->message.QoS == 1){ // for LCS to use all the VCs
-#endif
-
-      base = vn*vc_per_vn; // 0 or 2  -> buffer_list(0,1) or buffer_list(2,3)
-      for(int i=base; i<base+vc_per_vn; i++){
-	  if(state[i] == 0){  // idle
-	      //packet_id++;  // if success
-	      packet->send_out_time = context.cycles;
-	      int length = (packet->length-1)/FLIT_LENGTH + 1; //round up
-	      num_flit += length;
-	      if(length == 1){
-		  Flit* flit = Flit::allocate(0, 10, vn, i, packet, context.cycles, pid);
-		  flit->trace_node.push_back(NI::id);
-		  flit->trace_time.push_back(context.cycles);
-		  flit->packet->in_net_time = context.cycles;
-		  buffer_list[i]->enqueue(flit);
-		  if(flit->packet->message.QoS == 1){
-		      priority_vc.push_back(i);
-		      priority_switch.push_back(i);
-		  }
-	      }else{
-		  for(int id=0; id<length; id++){
-		      if(id == 0){
-			  Flit* flit = Flit::allocate(id, 0, vn, i, packet, context.cycles, pid);
-			  flit->trace_node.push_back(NI::id);
-			  flit->trace_time.push_back(context.cycles);
-			  flit->packet->in_net_time = context.cycles;
-			  buffer_list[i]->enqueue(flit);
-			  if(flit->packet->message.QoS == 1){
-			      priority_vc.push_back(i);
-			      priority_switch.push_back(i);
-			  }
-		      }else
-			if(id == length-1){
-			    Flit* flit = Flit::allocate(id, 1, vn, i, packet, context.cycles, pid);
-			    flit->trace_node.push_back(NI::id);
-			    flit->trace_time.push_back(context.cycles);
-			    flit->packet->in_net_time = context.cycles;
-			    buffer_list[i]->enqueue(flit);
-			}else{
-			    Flit* flit = Flit::allocate(id, 2, vn, i, packet, context.cycles, pid);
-			    flit->trace_node.push_back(NI::id);
-			    flit->trace_time.push_back(context.cycles);
-			    flit->packet->in_net_time = context.cycles;
-			    buffer_list[i]->enqueue(flit);
-			}
-		  }
-	      }
-	      state[i] = 1;  // wait for VC allocation
-	      return true;
-	  }
-      }
-
-#ifdef SHARED_PRI
-      }
-      else{  // for URS to use only vc_per_vn without priority (vc_priority_per_vn)
-	  base = vn*vc_per_vn;
-	  for(int i=base; i<base+vc_per_vn-vc_priority_per_vn; i++){
-	    if(state[i] == 0){  // idle
-		//packet_id++;  // if success
-		packet->send_out_time = context.cycles;
-		int length = (packet->length-1)/FLIT_LENGTH+1; //round up
-		num_flit += length;
-		if(length == 1){
-		    Flit* flit = Flit::allocate(0, 10, vn, i, packet, context.cycles, pid);
-		    buffer_list[i]->enqueue(flit);
-		}else{
-		    for(int id=0; id<length; id++){
-			if(id == 0){
-			    Flit* flit = Flit::allocate(id, 0, vn, i, packet, context.cycles, pid);
-			    buffer_list[i]->enqueue(flit);
-			}else
-			  if(id == length-1){
-			      Flit* flit = Flit::allocate(id, 1, vn, i, packet, context.cycles, pid);
-			      buffer_list[i]->enqueue(flit);
-			  }else{
-			      Flit* flit = Flit::allocate(id, 2, vn, i, packet, context.cycles, pid);
-			      buffer_list[i]->enqueue(flit);
-			  }
-		    }
-		}
-		state[i] = 1;  // wait for VC allocation
-		return true;
-	    }
-	  }
-      }
-#endif
-      return false;
-
-
-  }
+bool NI::flitize(Packet* packet, int vn) {
+    return NIPacketizer::packetize(*this, packet, vn);
 }
-
-// void NI::packetDequeue(){
-//   for(int vn=0; vn<vn_num; vn++){
-//       while(packetBuffer_list[vn]->packet_num != 0 && packetBuffer_list[vn]->read()->message.out_cycle < cycles){
-
-// 	  Packet* packet = packetBuffer_list[vn]->read();
-// 	  assert(vn == packet->vnet);
-
-// 	  if(flitize(packet, vn)){
-// 	      packetBuffer_list[vn]->dequeue();
-// 	      if(packet->type == 0){
-// 		      count_s++;
-// 			  // cout << "NI send " << count_s << endl;
-// 	      }
-// 	      if(packet->type == 1){
-// 		      count_s_resp++;
-// 			  // cout << "NI send response " << count_s_resp << endl;
-// 	      }
-// 	  }
-// 	  else{
-// 	      break;
-// 	  }
-
-//       }
-//   }
-// }
 
 void NI::packetDequeue(){
   for(int vn=0; vn<vn_num; vn++){
@@ -257,10 +92,10 @@ void NI::packetDequeue(){
 			if(flitize(packet, vn)){
 				packetBuffer_list[vn]->dequeue();
 				
-				if(packet->type == 0){
+				if(packet->receive_class == ReceiveClass::RequestsAndData){
 					context.ni_statistics.count_s++;
 				}
-				if(packet->type == 1){
+				if(packet->receive_class == ReceiveClass::ResultsAndAcks){
 					context.ni_statistics.count_s_resp++;
               	}
           	}
@@ -497,19 +332,14 @@ void NI::dequeue(){
       if(flit->type == 0 || flit->type == 10){
 		  VCRouter* vcRouter = dynamic_cast<VCRouter*>(out_port->out_link->rInPort->router_owner);
 		  assert(vcRouter != NULL);
-#ifdef Countlatency
-		  //statistics for head flit in all types
-		  if (flit->packetid * 3 + flit->packet->message.type < CountNum){
-			context.legacy_packet_trace[flit->packetid * 3 + flit->packet->message.type][5] = context.cycles;
-		  }
-#endif
 #ifdef SHARED_VC
 		  if(flit->packet->signal->QoS == 1){
 			  out_port->out_link->rInPort->priority_vc.push_back(flit->vc);
 			  out_port->out_link->rInPort->priority_switch.push_back(flit->vc);
 		  }
 #endif
-		  int route_result = vcRouter->getRoute(flit);
+		  flit->packet->mark(PacketEvent::HeadInjected, context.cycles);
+          int route_result = vcRouter->getRoute(flit);
 		  out_port->out_link->rInPort->out_port[flit->vc] = route_result;
 		  assert(out_port->out_link->rInPort->state[flit->vc] == 1);
 		  out_port->out_link->rInPort->state[flit->vc] = 2; //wait for vc allocation
@@ -517,242 +347,8 @@ void NI::dequeue(){
   }
 }
 
-// void NI::inputCheck(){
-//   for(int i=0; i<vn_num*(vc_per_vn + vc_priority_per_vn); i++){
-//       ///< if the in port buffer contains flit
-//       if(in_port->buffer_list[i]->cur_flit_num != 0){
-// 		  assert(in_port->state[i] == 2);
-// 		  Flit* flit = in_port->buffer_list[i]->readLast(); ///> reference to the last flit in buffer
-// 		  int length = (flit->packet->length-1)/FLIT_LENGTH+1;
-
-// #ifdef Countlatency
-// 		  if (flit->type == 1 || flit->type == 10)
-// 		  {
-// 			  //statistics for tail flit arrived at NI in all types
-// 			  if(flit->packetid * 3 + flit->packet->message.type < CountNum){
-// 			  	if(DNN_latency[flit->packetid * 3 + flit->packet->message.type][6] == 0)
-// 			  	{DNN_latency[flit->packetid * 3 + flit->packet->message.type][6] = cycles;}
-// 			  }
-// 		  }
-// #endif
-// 		  /// normal check
-// 		  if(flit->sched_time < cycles && (flit->type == 1 || flit->type == 10)){  ///< tail or head tail flit
-// 			  in_port->state[i] = 0; //idle; 2->0; no need for vc allocation
-// 			  Packet* packet = flit->packet;
-// #ifndef newpooling
-// 			  packet->message.out_cycle = cycles + LINK_TIME - 1;   // 1 cycle delay from NI_network to masterNI/slaveNI
-// 			  NI_cycle_npooling = cycles;
-// #endif
-// #ifdef newpooling
-// 			  if (packet->message.penable > 0)
-// 			  {
-// 				  if (NI_cycle_npooling < cycles + 4)
-// 				  {
-// 					  NI_cycle_npooling = cycles + POOLING_DELAY;
-// 					  packet->message.out_cycle = NI_cycle_npooling + LINK_TIME - 1; // pipeline the pooling unit
-// 				  }
-// 				  else
-// 				  {
-// 					  NI_cycle_npooling = NI_cycle_npooling + POOLING_DELAY;
-// 					  packet->message.out_cycle = NI_cycle_npooling + LINK_TIME - 1; // add pooling unit delay
-// 				  }
-// 				  // cout << cycles << " activate pooling at cycle " << packet->message.out_cycle << endl;
-// 			  }
-// 			  else
-// 			  {
-// 				  packet->message.out_cycle = cycles + LINK_TIME - 1;   // 1 cycle delay from NI_network to masterNI/slaveNI
-// 				  NI_cycle_npooling = cycles;
-// 			  }
-// #endif
-// 			  if(packet->type == 0){ // request type 0
-// 				  packet_buffer_out[0].push_back(packet);
-// 				  count_r++;
-// 				  //cout << "NI received " << count_r << endl;
-// 			  }
-// 			  else{ // response type 1
-// 				  count_r_resp++;
-// 				  //cout <<  "NI received response " << count_r_resp << endl;
-// 				  packet_buffer_out[1].push_back(packet);
-// 			  }
-
-
-// 			  if(packet->message.QoS == 3 || packet->message.QoS == 1){
-// 			  total_delay += cycles - packet->send_out_time;
-// 			  total_num++;
-// 			  }else{
-// 			  total_delay_URS += cycles - packet->send_out_time;
-// 			  total_num_URS++;
-// 			  }
-
-
-// 			  int delay = cycles - packet->send_out_time - (abs(packet->message.NI_id/X_NUM-packet->destination[0])+abs(packet->message.NI_id%X_NUM-packet->destination[1])+1)*3 - 2 - ((packet->length-1)/FLIT_LENGTH+1);
-
-// 			// cNoC packets (type 4/5) have additional latency from in-transit computation and 
-// 			// do not respect the lower bound of pure XY routing: exclude them from the assert.
-// 			if (packet->type != 4 && packet->type != 5) {
-// 				assert(delay >= 0);
-// 			}
-
-// #ifdef STD_LATENCY
-// 	      if(packet->signal->test_tag == 1){
-// #else
-// 	      if(packet->message.QoS==3 || packet->message.QoS==1){
-// #endif
-
-// 		  worst_LCS = (worst_LCS<delay)?delay:worst_LCS;
-// 		  if(delay < DISTRIBUTION_NUM-1)
-// 		    LCS_delay_distribution[delay]++;
-// 		  else
-// 		    LCS_delay_distribution[DISTRIBUTION_NUM-1]++;}
-// 	      else{
-// 		  worst_URS = (worst_URS<delay)?delay:worst_URS;
-// 		  if(delay < DISTRIBUTION_NUM-1)
-// 		    URS_delay_distribution[delay]++;
-// 		  else
-// 		    URS_delay_distribution[DISTRIBUTION_NUM-1]++;
-// 	      }
-
-
-// 	      //std::cout<<"Receive packet at cycles: "<< cycles << ", at NI id: " << id << ". Packet length:" <<packet->length <<". slave id:" << packet->slave_id << ". sequence id:" << packet->sequence_id<<std::endl;
-
-//               // ideal_time = (hop+1)*2+flit_num; hop: the routers the packet get through
-// 	      while(in_port->buffer_list[i]->cur_flit_num != 0){
-// 			  Flit* flit = in_port->buffer_list[i]->dequeue();
-// 			  length = (flit->packet->length-1)/FLIT_LENGTH+1;
-
-// 			  delete flit;
-// 	      }
-// 	  }
-//       }
-//   }
-// }
-
-void NI::inputCheck(){
-  for(int i=0; i<vn_num*(vc_per_vn + vc_priority_per_vn); i++){
-      ///< if the in port buffer contains flit
-      if(in_port->buffer_list[i]->cur_flit_num != 0){
-          assert(in_port->state[i] == 2);
-          Flit* flit = in_port->buffer_list[i]->readLast(); ///> reference to the last flit in buffer
-          int length = (flit->packet->length-1)/FLIT_LENGTH+1;
-
-#ifdef Countlatency
-          if (flit->type == 1 || flit->type == 10)
-          {
-              //statistics for tail flit arrived at NI in all types
-              if(flit->packetid * 3 + flit->packet->message.type < CountNum){
-                if(context.legacy_packet_trace[flit->packetid * 3 + flit->packet->message.type][6] == 0)
-                {context.legacy_packet_trace[flit->packetid * 3 + flit->packet->message.type][6] = context.cycles;}
-              }
-          }
-#endif
-          /// normal check
-          if(flit->sched_time < context.cycles && (flit->type == 1 || flit->type == 10)){  ///< tail or head tail flit
-              Packet* packet = flit->packet; // Spostato all'inizio del blocco
-
-              // --- RTL FIFO BACKPRESSURE LOGIC ---
-              // Determiniamo la FIFO di destinazione (0 per Request, 1 per Response/cNoC)
-              int target_fifo = (packet->type == 0) ? 0 : 1; 
-              
-              // Se la FIFO di destinazione è piena, applichiamo la contropressione
-              if (packet_buffer_out[target_fifo].size() >= NI_RX_FIFO_DEPTH) {
-                  // Ignoriamo questo flit per il ciclo corrente. 
-                  // Non arrivando al while() in fondo, i flit non vengono estratti.
-                  // I crediti non vengono restituiti, fermando il router a monte.
-                  continue; 
-              }
-              // -----------------------------------
-
-              in_port->state[i] = 0; //idle; 2->0; no need for vc allocation
-              
-#ifndef newpooling
-              packet->message.out_cycle = context.cycles + LINK_TIME - 1;   // 1 cycle delay from NI_network to masterNI/slaveNI
-              NI_cycle_npooling = context.cycles;
-#endif
-#ifdef newpooling
-              if (packet->message.penable > 0)
-              {
-                  if (NI_cycle_npooling < context.cycles + 4)
-                  {
-                      NI_cycle_npooling = context.cycles + POOLING_DELAY;
-                      packet->message.out_cycle = NI_cycle_npooling + LINK_TIME - 1; // pipeline the pooling unit
-                  }
-                  else
-                  {
-                      NI_cycle_npooling = NI_cycle_npooling + POOLING_DELAY;
-                      packet->message.out_cycle = NI_cycle_npooling + LINK_TIME - 1; // add pooling unit delay
-                  }
-                  // cout << cycles << " activate pooling at cycle " << packet->message.out_cycle << endl;
-              }
-              else
-              {
-                  packet->message.out_cycle = context.cycles + LINK_TIME - 1;   // 1 cycle delay from NI_network to masterNI/slaveNI
-                  NI_cycle_npooling = context.cycles;
-              }
-#endif
-              if(packet->type == 0){ // request type 0
-                  packet_buffer_out[0].push_back(packet);
-                  context.ni_statistics.count_r++;
-                  //cout << "NI received " << count_r << endl;
-              }
-              else{ // response type 1
-                  context.ni_statistics.count_r_resp++;
-                  //cout <<  "NI received response " << count_r_resp << endl;
-                  packet_buffer_out[1].push_back(packet);
-              }
-
-
-              if(packet->message.QoS == 3 || packet->message.QoS == 1){
-              total_delay += context.cycles - packet->send_out_time;
-              total_num++;
-              }else{
-              total_delay_URS += context.cycles - packet->send_out_time;
-              total_num_URS++;
-              }
-
-
-              std::int64_t delay = static_cast<std::int64_t>(context.cycles - packet->send_out_time) - (abs(packet->message.NI_id/X_NUM-packet->destination[0])+abs(packet->message.NI_id%X_NUM-packet->destination[1])+1)*3 - 2 - ((packet->length-1)/FLIT_LENGTH+1);
-
-            // cNoC packets (type 4/5) have additional latency from in-transit computation and 
-            // do not respect the lower bound of pure XY routing: exclude them from the assert.
-            if (packet->message.type != 4 && packet->message.type != 5) {
-                assert(delay >= 0);
-            }
-            // A source-routed compute packet can violate the XY lower bound;
-            // never use its negative excess delay as a histogram index.
-            delay = std::max<std::int64_t>(0, delay);
-
-#ifdef STD_LATENCY
-          if(packet->signal->test_tag == 1){
-#else
-          if(packet->message.QoS==3 || packet->message.QoS==1){
-#endif
-
-          context.ni_statistics.worst_LCS = (context.ni_statistics.worst_LCS<delay)?delay:context.ni_statistics.worst_LCS;
-          if(delay < DISTRIBUTION_NUM-1)
-            context.ni_statistics.LCS_delay_distribution[delay]++;
-          else
-            context.ni_statistics.LCS_delay_distribution[DISTRIBUTION_NUM-1]++;}
-          else{
-          context.ni_statistics.worst_URS = (context.ni_statistics.worst_URS<delay)?delay:context.ni_statistics.worst_URS;
-          if(delay < DISTRIBUTION_NUM-1)
-            context.ni_statistics.URS_delay_distribution[delay]++;
-          else
-            context.ni_statistics.URS_delay_distribution[DISTRIBUTION_NUM-1]++;
-          }
-
-
-          //std::cout<<"Receive packet at cycles: "<< cycles << ", at NI id: " << id << ". Packet length:" <<packet->length <<". slave id:" << packet->slave_id << ". sequence id:" << packet->sequence_id<<std::endl;
-
-              // ideal_time = (hop+1)*2+flit_num; hop: the routers the packet get through
-          	while(in_port->buffer_list[i]->cur_flit_num != 0){
-				Flit* flit = in_port->buffer_list[i]->dequeue();
-				length = (flit->packet->length-1)/FLIT_LENGTH+1;
-
-				Flit::release(flit);
-          }
-      }
-      }
-  }
+void NI::inputCheck() {
+    NIPacketAssembler::poll(*this);
 }
 
 void NI::runOneStep(){
@@ -777,6 +373,35 @@ NI::~NI (){
       packetBuffer_list.pop_back();
       delete packetBuffer;
   }
+  for (auto& queue : packet_buffer_out)
+      for (Packet* packet : queue) Packet::release(packet);
   delete in_port;
   delete out_port;
+}
+
+bool NI::trySend(Packet* packet) {
+    if (!packet || packet->context != &context || packet->vnet < 0 || packet->vnet >= vn_num)
+        throw std::invalid_argument("Invalid NI transmit packet");
+    if (packet->in_pool || packet->release_requested || packet->submitted)
+        throw std::logic_error("NI requires an active packet that has not been submitted");
+    packet->submitted = true;
+    packet->mark(PacketEvent::Enqueued, context.cycles);
+    packetBuffer_list[packet->vnet]->enqueue(packet);
+    return true;
+}
+size_t NI::txQueued(VirtualNetwork network) const {
+    return packetBuffer_list.at(vnIndex(network))->packet_num;
+}
+Packet* NI::ReceiveCursor::peek() const {
+    const auto& queue = owner_.packet_buffer_out.at(queueIndex(category_));
+    return index_ < queue.size() ? queue[index_] : nullptr;
+}
+void NI::ReceiveCursor::skip() {
+    if (peek()) ++index_;
+}
+Packet* NI::ReceiveCursor::take() {
+    auto& queue = owner_.packet_buffer_out.at(queueIndex(category_));
+    Packet* packet = peek();
+    if (packet) queue.erase(queue.begin() + index_);
+    return packet;
 }

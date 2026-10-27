@@ -13,6 +13,7 @@ StopReason Simulation::run() {
         throw std::logic_error("A Simulation instance can only run once");
     context_.cycles = 0;
     context_.packet_id_base = 0;
+    context_.packet_trace_limit = options_.packet_trace_limit;
     cnnmodel = std::make_unique<Model>(options_.model_file, options_.weight_file, options_.input_file);
     cnnmodel->load();
 #ifdef fulleval
@@ -21,9 +22,6 @@ StopReason Simulation::run() {
 #elif defined randomeval
     cnnmodel->randomin();
     cnnmodel->randomweight();
-#endif
-#ifdef Countlatency
-    context_.legacy_packet_trace.assign(CountNum, std::vector<std::int64_t>(8, 0));
 #endif
     ni_counts_.assign(TOT_NUM, 1);
     const int flit_depth = INPORT_FLIT_BUFFER_SIZE;
@@ -150,18 +148,10 @@ void Simulation::reportLegacy() const {
     cout << "Total KV evictions: " << vcNetwork->getTotalKVEvictions() << endl;
     macnet->reportSramPeaks(cout);
 
-#ifdef Countlatency
-	int maxoutnum = CountNum;
-	ofstream outfile_delay("./src/output/lenettrace.txt", ios::out);
-	if (context_.packet_id_base*3 <= CountNum) {maxoutnum = context_.packet_id_base*3;}
-	for(int i=0; i<maxoutnum; i++){
-	  for(int j=0; j<8; j++){
-		  outfile_delay << context_.legacy_packet_trace[i][j] << ' ';
-	  }
-	  outfile_delay << endl;
-	}
-	outfile_delay.close();
-#endif
     if (result_.status == StopReason::CycleLimit)
         std::cout << "Simulation stopped: cycle_limit (incomplete)" << std::endl;
+}
+
+void Simulation::writePacketTraceCsv(std::ostream& out) const {
+    writePacketTraces(out, context_.packet_traces);
 }

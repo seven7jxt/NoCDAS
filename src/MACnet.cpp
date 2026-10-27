@@ -515,7 +515,7 @@ void MACnet::inject_cNoC_traffic() {
                 
                 int target_router = cnoc_compute_path[y % cnoc_compute_path.size()];
                 dist_msg.destination = target_router; 
-                dist_msg.type = 4; 
+                dist_msg.kind = MessageKind::Distribution;
                 dist_msg.compute_op = o_fn;
                 dist_msg.out_cycle = context.cycles;
                 dist_msg.signal_id = context.packet_id_base + y;
@@ -547,17 +547,18 @@ void MACnet::inject_cNoC_traffic() {
                 
                 dist_msg.data_length = dist_msg.data.size();
                 
-                Packet* p = Packet::allocate(std::move(dist_msg), X_NUM, mem_ni->NI_num);
+                Packet* p = Packet::allocate(context, std::move(dist_msg), X_NUM, mem_ni->NI_num);
                 p->send_out_time = context.cycles;
                 p->in_net_time = context.cycles;
-                mem_ni->packetBuffer_list[p->vnet]->enqueue(p);
+
+                mem_ni->trySend(p);
             }
         } else {
             for (int router_id : cnoc_compute_path) {
                 Message dist_msg = Message(); 
                 dist_msg.source_id = mem_id;
                 dist_msg.destination = router_id; 
-                dist_msg.type = 4; 
+                dist_msg.kind = MessageKind::Distribution;
                 dist_msg.compute_op = o_fn;
                 dist_msg.out_cycle = context.cycles;
                 dist_msg.signal_id = context.packet_id_base;
@@ -582,10 +583,11 @@ void MACnet::inject_cNoC_traffic() {
                     dist_msg.data.push_back(1.0f); 
                 }
                 dist_msg.data_length = dist_msg.data.size();
-                Packet* p = Packet::allocate(std::move(dist_msg), X_NUM, mem_ni->NI_num);
+                Packet* p = Packet::allocate(context, std::move(dist_msg), X_NUM, mem_ni->NI_num);
                 p->send_out_time = context.cycles;
                 p->in_net_time = context.cycles;
-                mem_ni->packetBuffer_list[p->vnet]->enqueue(p);
+
+                mem_ni->trySend(p);
             }
         }
         cnoc_phase = 2; 
@@ -598,7 +600,7 @@ void MACnet::inject_cNoC_traffic() {
             comp_msg.NI_id = mem_id;
             comp_msg.mac_id = mem_id;
             comp_msg.destination = mem_id; 
-            comp_msg.type = 5; 
+            comp_msg.kind = MessageKind::Compute;
             comp_msg.compute_op = o_fn;
             comp_msg.out_cycle = context.cycles;
             comp_msg.signal_id = context.packet_id_base + y;
@@ -731,10 +733,11 @@ void MACnet::inject_cNoC_traffic() {
             
             comp_msg.data_length = comp_msg.data.size();
             
-            Packet* p = Packet::allocate(std::move(comp_msg), X_NUM, mem_ni->NI_num);
+            Packet* p = Packet::allocate(context, std::move(comp_msg), X_NUM, mem_ni->NI_num);
             p->send_out_time = context.cycles;
             p->in_net_time = context.cycles;
-            mem_ni->packetBuffer_list[p->vnet]->enqueue(p);
+
+            mem_ni->trySend(p);
         }
         
         cnoc_phase = 3 + this->in_y;
@@ -760,17 +763,17 @@ void MACnet::run_terminal_gate() {
     if (!terminal_gate_active) return;
     NI* source = vcNetwork->NI_list[dest_list[0]];
     for (int mc = 0; mc < MEM_NODES; ++mc) {
-        auto& queue = vcNetwork->NI_list[dest_list[mc]]->packet_buffer_out[0];
-        for (auto it = queue.begin(); it != queue.end();) {
-            Packet* packet = *it;
-            if (packet->message.type != 7 || packet->message.out_cycle > context.cycles) { ++it; continue; }
+        auto received = vcNetwork->NI_list[dest_list[mc]]->receive(ReceiveClass::RequestsAndData);
+        while (Packet* packet = received.peek()) {
+            if (packet->message.kind != MessageKind::TerminalOperands || packet->message.out_cycle > context.cycles) { received.skip(); continue; }
             auto& lane = terminal_lanes[mc].at(packet->message.mac_id);
             assert(packet->message.layer_id == c_layer && lane.waiting_for_input);
             assert(packet->message.data.size() == 2 * lane.batch_count);
             lane.inbuffer.assign(packet->message.data.begin(), packet->message.data.end());
             lane.waiting_for_input = false;
             lane.first_ready = context.cycles + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
-            it = queue.erase(it);
+            received.take();
+            packet->mark(PacketEvent::Consumed, context.cycles);
             Packet::release(packet);
         }
     }
@@ -779,7 +782,7 @@ void MACnet::run_terminal_gate() {
             auto& lane = terminal_lanes[mc][index];
             if (lane.batch_count == 0 && !lane.tasks.empty()) {
                 if (context.cycles < terminal_dispatch_ready ||
-                    (mc != 0 && source->packetBuffer_list[0]->packet_num >= NI_TX_FIFO_DEPTH)) continue;
+                    (mc != 0 && source->txQueued(VirtualNetwork::Memory) >= NI_TX_FIFO_DEPTH)) continue;
                 lane.batch_count = std::min(lane.tasks.size(),
                     static_cast<size_t>(CNOC_GATE_BATCH_PAIRS));
                 lane.issued = 0;
@@ -798,7 +801,7 @@ void MACnet::run_terminal_gate() {
                     lane.first_ready = terminal_dispatch_ready + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
                 } else {
                     Message message{};
-                    message.type = 7;
+                    message.kind = MessageKind::TerminalOperands;
                     message.source_id = message.NI_id = source->id;
                     message.destination = dest_list[mc];
                     message.mac_id = index;
@@ -806,10 +809,11 @@ void MACnet::run_terminal_gate() {
                     message.data = std::move(operands);
                     message.data_length = message.data.size();
                     message.out_cycle = terminal_dispatch_ready;
-                    Packet* packet = Packet::allocate(std::move(message), X_NUM, source->NI_num);
+                    Packet* packet = Packet::allocate(context, std::move(message), X_NUM, source->NI_num);
                     packet->send_out_time = packet->message.out_cycle;
                     packet->in_net_time = context.cycles;
-                    source->packetBuffer_list[0]->enqueue(packet);
+
+                    source->trySend(packet);
                     lane.waiting_for_input = true;
                 }
             }
@@ -1164,11 +1168,13 @@ void MACnet::runOneStep()
         mem_id = dest_list[memidx];
         tmpNI = this->vcNetwork->NI_list[mem_id];
         
-        for (auto it = tmpNI->packet_buffer_out[0].begin(); it != tmpNI->packet_buffer_out[0].end(); ) {
-            tmpPacket = *it;
+        {
+        auto received = tmpNI->receive(ReceiveClass::RequestsAndData);
+        while ((tmpPacket = received.peek())) {
+
             
 #ifdef cNoC_MODE
-            if (tmpPacket->message.type == 5 && tmpPacket->message.out_cycle <= context.cycles) {
+            if (tmpPacket->message.kind == MessageKind::Compute && tmpPacket->message.out_cycle <= context.cycles) {
                 int y = tmpPacket->message.sequence_id;
                 int p_offset = tmpPacket->message.psum_offset;
                 
@@ -1218,32 +1224,22 @@ void MACnet::runOneStep()
                     }
                 }
                 
-                it = tmpNI->packet_buffer_out[0].erase(it);
+                received.take();
+                tmpPacket->mark(PacketEvent::Consumed, context.cycles);
                 Packet::release(tmpPacket);
                 continue;
             }
 #endif
 
-            if(tmpPacket->message.type != 0 || tmpPacket->message.out_cycle >= context.cycles)
+            if(tmpPacket->message.kind != MessageKind::DataRequest || tmpPacket->message.out_cycle >= context.cycles)
             {
-                ++it;
+                received.skip();
                 continue;
             }
             src = tmpPacket->message.source_id;
             pid = tmpPacket->message.signal_id;
             src_mac = tmpPacket->message.mac_id;
 
-#ifdef Countlatency
-            if(pid*3 < CountNum) {
-                context.legacy_packet_trace[pid*3][4] = tmpPacket->send_out_time;
-                context.legacy_packet_trace[pid*3][7] = context.cycles;
-            }
-            if(pid*3+1 < CountNum) {
-                context.legacy_packet_trace[pid*3+1][1] = 1;
-                context.legacy_packet_trace[pid*3+1][2] = src_mac;
-                context.legacy_packet_trace[pid*3+1][3] = context.cycles;
-            }
-#endif
             tmpMAC = MAC_list[src_mac];
             
             if(this->cnnmodel->all_layer_type[c_layer]=='c'){ 
@@ -1289,7 +1285,7 @@ void MACnet::runOneStep()
                     }
 #endif
                     MAC_list[mem_id]->pecycle = context.cycles + ceil((in_ch * w_x * w_y * 2 + 1) * MEM_read_delay)  + CACHE_DELAY;
-                    MAC_list[mem_id]->inject(1,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
+                    MAC_list[mem_id]->inject(MessageKind::DataResponse,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
                 }
             }
             else if (this->cnnmodel->all_layer_type[c_layer]=='p') 
@@ -1307,7 +1303,7 @@ void MACnet::runOneStep()
                         tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), this->input_table[tmpMAC->tmpch].begin() + (tmpy*stride+p)*(in_x+2*pad) + tmpx*stride, this->input_table[tmpMAC->tmpch].begin() + (tmpy*stride+p)*(in_x+2*pad) + tmpx*stride + w_x);
                     }
                     MAC_list[mem_id]->pecycle = context.cycles + ceil(w_x * w_y * MEM_read_delay) + CACHE_DELAY;
-                    MAC_list[mem_id]->inject(1,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
+                    MAC_list[mem_id]->inject(MessageKind::DataResponse,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
                 }
             }
             else if (this->cnnmodel->all_layer_type[c_layer]=='f'){ 
@@ -1344,7 +1340,7 @@ void MACnet::runOneStep()
                     }
                     
                     MAC_list[mem_id]->pecycle = context.cycles + ceil(tmpMAC->inbuffer.size() * MEM_read_delay) + CACHE_DELAY;
-                    MAC_list[mem_id]->inject(1,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
+                    MAC_list[mem_id]->inject(MessageKind::DataResponse,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
                 }
             }
             else if (this->cnnmodel->all_layer_type[c_layer]=='m' || this->cnnmodel->all_layer_type[c_layer]=='l' || 
@@ -1512,18 +1508,22 @@ void MACnet::runOneStep()
 
                     int payload_size = tmpMAC->inbuffer.size();
                     MAC_list[mem_id]->pecycle = context.cycles + ceil(payload_size * MEM_read_delay) + CACHE_DELAY;
-                    MAC_list[mem_id]->inject(1, src, payload_size, o_fn, vcNetwork->NI_list[mem_id], pid, src_mac);
+                    MAC_list[mem_id]->inject(MessageKind::DataResponse, src, payload_size, o_fn, vcNetwork->NI_list[mem_id], pid, src_mac);
                 }
             }
-            it = tmpNI->packet_buffer_out[0].erase(it);
+            received.take();
+            tmpPacket->mark(PacketEvent::Consumed, context.cycles);
             Packet::release(tmpPacket);
         }
+        }
 
-        for (auto it = tmpNI->packet_buffer_out[1].begin(); it != tmpNI->packet_buffer_out[1].end(); ) {
-            tmpPacket = *it;
-            if(tmpPacket->message.type != 2 || tmpPacket->message.out_cycle >= context.cycles)
+        {
+        auto received = tmpNI->receive(ReceiveClass::ResultsAndAcks);
+        while ((tmpPacket = received.peek())) {
+
+            if(tmpPacket->message.kind != MessageKind::Result || tmpPacket->message.out_cycle >= context.cycles)
             {
-                ++it;
+                received.skip();
                 continue;
             }
             src = tmpPacket->message.source_id;
@@ -1531,15 +1531,6 @@ void MACnet::runOneStep()
             src_mac = tmpPacket->message.mac_id;
             tmpMAC = MAC_list[src_mac];
 
-#ifdef Countlatency
-            if(pid*3+2 < CountNum) {
-                context.legacy_packet_trace[pid*3+2][0] = c_layer;
-                context.legacy_packet_trace[pid*3+2][1] = 2;
-                context.legacy_packet_trace[pid*3+2][2] = src_mac;
-                context.legacy_packet_trace[pid*3+2][4] = tmpPacket->send_out_time;
-                context.legacy_packet_trace[pid*3+2][7] = context.cycles;
-            }
-#endif
 
             if(this->cnnmodel->all_layer_type[c_layer]=='c'){ 
 #ifdef newpooling
@@ -1554,7 +1545,7 @@ void MACnet::runOneStep()
                 if(tmpMAC->selfstatus == 4) {
                     if(tmpMAC->send == 1) {
                         this->output_table[tmpMAC->tmpch][tmpMAC->tmpm] = tmpMAC->outfeature;
-                        MAC_list[mem_id]->inject(3,src,1,2,vcNetwork->NI_list[mem_id],pid, src_mac);
+                        MAC_list[mem_id]->inject(MessageKind::Ack,src,1,2,vcNetwork->NI_list[mem_id],pid, src_mac);
                     }
                 }
 #endif
@@ -1571,7 +1562,7 @@ void MACnet::runOneStep()
                 if(tmpMAC->selfstatus == 4) {
                     if(tmpMAC->send == 1) {
                         this->output_table[tmpMAC->tmpch][tmpMAC->tmpm] = tmpMAC->outfeature;
-                        MAC_list[mem_id]->inject(3,src,1,2,vcNetwork->NI_list[mem_id],pid, src_mac);
+                        MAC_list[mem_id]->inject(MessageKind::Ack,src,1,2,vcNetwork->NI_list[mem_id],pid, src_mac);
                     }
                 }
 #endif
@@ -1589,7 +1580,7 @@ void MACnet::runOneStep()
                         // packets while tmpMAC->tmpm advances through a tile.
                         this->output_table[tmpPacket->message.data[1]][tmpPacket->message.data[2]] =
                             tmpPacket->message.data[0];
-                        MAC_list[mem_id]->inject(3,src,1,2,vcNetwork->NI_list[mem_id],pid, src_mac);
+                        MAC_list[mem_id]->inject(MessageKind::Ack,src,1,2,vcNetwork->NI_list[mem_id],pid, src_mac);
                     }
                 }
 #endif
@@ -1607,7 +1598,7 @@ void MACnet::runOneStep()
                 if(tmpMAC->selfstatus == 4) {
                     if(tmpMAC->send == 1) {
                         this->output_table[tmpPacket->message.data[1]][tmpPacket->message.data[2]] = tmpPacket->message.data[0];
-                        MAC_list[mem_id]->inject(3,src,1,2,vcNetwork->NI_list[mem_id],pid, src_mac);
+                        MAC_list[mem_id]->inject(MessageKind::Ack,src,1,2,vcNetwork->NI_list[mem_id],pid, src_mac);
                     }
                 }
 #endif
@@ -1619,8 +1610,10 @@ void MACnet::runOneStep()
 #ifdef only3type
             if (tmpMAC->use_elementwise_batch) ++tmpMAC->received_acks;
 #endif
-            it = tmpNI->packet_buffer_out[1].erase(it);
+            received.take();
+            tmpPacket->mark(PacketEvent::Consumed, context.cycles);
             Packet::release(tmpPacket);
+        }
         }
     }
 
@@ -1641,44 +1634,45 @@ void MACnet::runOneStep()
         if (is_dest[i]) {continue;}
 
         tmpNI = this->vcNetwork->NI_list[i];
-        for (auto it = tmpNI->packet_buffer_out[0].begin(); it != tmpNI->packet_buffer_out[0].end(); ) {
-            tmpPacket = *it;
+        {
+        auto received = tmpNI->receive(ReceiveClass::RequestsAndData);
+        while ((tmpPacket = received.peek())) {
+
             
 #ifdef cNoC_MODE
-            if (tmpPacket->message.type == 4) {
-                it = tmpNI->packet_buffer_out[0].erase(it);
+            if (tmpPacket->message.kind == MessageKind::Distribution) {
+                received.take();
+                tmpPacket->mark(PacketEvent::Consumed, context.cycles);
                 Packet::release(tmpPacket);
                 continue;
             }
 #endif
 
-            if(tmpPacket->message.type != 1 || tmpPacket->message.out_cycle >= context.cycles)
+            if(tmpPacket->message.kind != MessageKind::DataResponse || tmpPacket->message.out_cycle >= context.cycles)
             {
-                ++it;
+                received.skip();
                 continue;
             }
             src_mac = tmpPacket->message.mac_id; 
             pid = tmpPacket->message.signal_id;
 
-#ifdef Countlatency
-            if(pid*3 + 1 < CountNum) {
-                context.legacy_packet_trace[pid*3+1][4] = tmpPacket->send_out_time;
-                context.legacy_packet_trace[pid*3+1][7] = context.cycles;
-            }
-#endif
             tmpMAC = MAC_list[src_mac];
             tmpMAC->request = -1;
             tmpMAC->finishDataWait();
-            it = tmpNI->packet_buffer_out[0].erase(it);
+            received.take();
+            tmpPacket->mark(PacketEvent::Consumed, context.cycles);
             Packet::release(tmpPacket);
+        }
         }
 
 #ifndef only3type
-        for (auto it = tmpNI->packet_buffer_out[1].begin(); it != tmpNI->packet_buffer_out[1].end(); ) {
-            tmpPacket = *it;
-            if(tmpPacket->message.type != 3)
+        {
+        auto received = tmpNI->receive(ReceiveClass::ResultsAndAcks);
+        while ((tmpPacket = received.peek())) {
+
+            if(tmpPacket->message.kind != MessageKind::Ack)
             {
-                ++it;
+                received.skip();
                 continue;
             }
             src_mac = tmpPacket->message.mac_id;
@@ -1688,8 +1682,10 @@ void MACnet::runOneStep()
             } else {
                 tmpMAC->send = 2;
             }
-            it = tmpNI->packet_buffer_out[1].erase(it);
+            received.take();
+            tmpPacket->mark(PacketEvent::Consumed, context.cycles);
             Packet::release(tmpPacket);
+        }
         }
 #endif
     }

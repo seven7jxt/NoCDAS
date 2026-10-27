@@ -24,11 +24,26 @@
 class VCRouter;
 class NI;
 
+// Sums across PEs (PE-cycles) and blocked output ports (port-cycles).
+// These overlap across components and are NOT a latency decomposition.
 struct WaitCounters {
   std::uint64_t pe_network = 0;
   std::uint64_t pe_memory = 0;
   std::uint64_t router_mfu = 0;
   std::uint64_t router_kv = 0;
+};
+
+struct RouterAccounting {
+  std::uint64_t blocked_port_cycles = 0;
+  std::uint64_t blocked_router_cycles = 0;
+  std::uint64_t service_occupied_cycles = 0;
+  std::uint64_t kv_hold_cycles = 0;
+  std::optional<Cycle> last_blocked_cycle;
+  std::optional<Cycle> last_sample_cycle;
+};
+struct PEAccounting {
+  std::uint64_t network_wait_cycles = 0;
+  std::uint64_t memory_service_wait_cycles = 0;
 };
 
 class VCNetwork
@@ -79,9 +94,12 @@ public:
 
   // Performance counters for time spent waiting on packetized data movement.
   // All values are in NoC clock cycles and are cumulative until destruction.
-  void recordPEWait(int layer_id, std::uint64_t network_cycles,
+  void recordPEWait(int pe_id, int layer_id, std::uint64_t network_cycles,
                     std::uint64_t memory_cycles);
-  void recordRouterWait(int layer_id, bool waiting_for_kv);
+  void recordRouterWait(int router_id, int layer_id, bool waiting_for_kv);
+  void sampleRouterOccupancy(int router_id, Cycle occupied_until, Cycle kv_retry_until);
+  const std::vector<RouterAccounting>& routerAccounting() const { return router_accounting; }
+  const std::vector<PEAccounting>& peAccounting() const { return pe_accounting; }
   WaitCounters getTotalWaitCycles() const;
   WaitCounters getLayerWaitCycles(int layer_id) const;
 
@@ -100,6 +118,8 @@ public:
   ~VCNetwork ();
 
 private:
+  std::vector<RouterAccounting> router_accounting;
+  std::vector<PEAccounting> pe_accounting;
   std::uint64_t total_flit_hops;
   std::map<int, std::uint64_t> layer_flit_hops;
   WaitCounters total_wait_cycles;

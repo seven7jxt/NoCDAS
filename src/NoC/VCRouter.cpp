@@ -47,11 +47,7 @@ VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t
         in_port_list.push_back(t_rInPort);
 
     #ifdef outPortNoInfinite
-        ROutPort * t_rOutPort = new ROutPort(context, i, 1, 1, 0, 1);
-        if(i==4) 
-        {
-            t_rOutPort = new ROutPort(context, i, 1, 1, 0, 2);
-        }
+        ROutPort * t_rOutPort = new ROutPort(context, i, 1, 1, 0, i == 4 ? 2 : 1);
     #else
         ROutPort * t_rOutPort = new ROutPort(context, i, 1, 1, 0, INFINITE);
     #endif
@@ -77,7 +73,7 @@ VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t
 
 int VCRouter::getRoute(Flit* t_flit){
       // cNoC: Source Routing (Wormhole Safe)
-      if (t_flit->packet->message.type == 4 || t_flit->packet->message.type == 5) {
+      if (t_flit->packet->message.kind == MessageKind::Distribution || t_flit->packet->message.kind == MessageKind::Compute) {
           int path_idx = t_flit->packet->current_path_index;
           auto& path = t_flit->packet->message.routing_path;
 
@@ -591,24 +587,24 @@ void VCRouter::outPortDequeue(){
         if(out_port_list[i]->buffer_list[0]->cur_flit_num != 0 && out_port_list[i]->buffer_list[0]->read()->sched_time < context.cycles){
             Flit* flit = out_port_list[i]->buffer_list[0]->read();
 
-            if (flit->packet->message.type == 4 || flit->packet->message.type == 5) {
+            if (flit->packet->message.kind == MessageKind::Distribution || flit->packet->message.kind == MessageKind::Compute) {
                 if (context.cycles < mfu_occupied_until) {
                     // A KV retry occupies the router-wide MFU, but other
                     // eligible flits blocked by that same hold are waiting
                     // for the MFU, not for their own KV data.
                     const bool is_attention =
-                        flit->packet->message.type == 5 &&
+                        flit->packet->message.kind == MessageKind::Compute &&
                         flit->packet->message.compute_op == ATTENTION;
                     const bool waiting_for_kv = is_attention &&
                                                 context.cycles < kv_retry_until;
                     mfu_waiting_for_kv = waiting_for_kv;
-                    vcNetwork->recordRouterWait(flit->packet->message.layer_id,
+                    vcNetwork->recordRouterWait(id[0] * X_NUM + id[1], flit->packet->message.layer_id,
                                                 waiting_for_kv);
                     continue;
                 }
             }
             
-            if (flit->packet->message.type == 5 &&
+            if (flit->packet->message.kind == MessageKind::Compute &&
                 flit->packet->message.compute_op == ATTENTION &&
                 (flit->type == 1 || flit->type == 10)) {
                 int this_router_id = id[0] * X_NUM + id[1];
@@ -627,7 +623,7 @@ void VCRouter::outPortDequeue(){
                     }
                     
                     if (kv_token_count < expected_local_tokens) {
-                        vcNetwork->recordRouterWait(flit->packet->message.layer_id, true);
+                        vcNetwork->recordRouterWait(id[0] * X_NUM + id[1], flit->packet->message.layer_id, true);
                         mfu_waiting_for_kv = true;
                         kv_retry_until = context.cycles + 2;
                         mfu_occupied_until = context.cycles + 2;
@@ -640,7 +636,7 @@ void VCRouter::outPortDequeue(){
 
             int compute_delay = 0;
 
-            if (flit->packet->message.type == 4) {
+            if (flit->packet->message.kind == MessageKind::Distribution) {
                 int this_router = id[0] * X_NUM + id[1];
                 
                 // Snooping: The router intercepts the in-transit data and populates the SRAM
@@ -664,7 +660,7 @@ void VCRouter::outPortDequeue(){
                 compute_delay = std::max(1, compute_delay);
                 mfu_occupied_until = context.cycles + compute_delay;
             }
-            else if (flit->packet->message.type == 5) {
+            else if (flit->packet->message.kind == MessageKind::Compute) {
                 const int matmul_macs = computeInTransit(flit, i);
                 
                 int opcode = flit->packet->message.compute_op;
@@ -737,6 +733,7 @@ void VCRouter::runOneStep(){
     vcRequest();
     getSwitch();
     outPortDequeue();
+    vcNetwork->sampleRouterOccupancy(id[0] * X_NUM + id[1], mfu_occupied_until, kv_retry_until);
 }
 
 bool VCRouter::allocateSRAM(int num_floats) {

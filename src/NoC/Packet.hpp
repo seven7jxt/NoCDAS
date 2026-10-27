@@ -9,6 +9,10 @@
 #include <vector>
 #include <stdio.h>
 #include "../SimulationTime.hpp"
+#include "../PacketTrace.hpp"
+#include "MessageKind.hpp"
+
+struct SimulationContext;
 
 struct Message{
   int NI_id;
@@ -16,7 +20,7 @@ struct Message{
   Cycle out_cycle;
   int slave_id;
   int sequence_id;
-  int type;
+  MessageKind kind = MessageKind::DataRequest;
   int data_length;
   int destination;
   int QoS = 0;
@@ -49,12 +53,16 @@ struct Message{
 class Packet
 {
 public:
-  Packet(Message t_message, int router_num_x, int* NI_num);
 
+  SimulationContext* context = nullptr;
+  PacketId uid = 0;
+  size_t trace_slot = static_cast<size_t>(-1);
+  void mark(PacketEvent event, Cycle time);
   Message message;
   int length;                       // byte length
-  int type;                         // 0 -> request; 1 -> response; 4 -> distribution; 5 -> computation;
-  int vnet;
+  ReceiveClass receive_class = ReceiveClass::RequestsAndData;
+  int vnet; // Flit/VC indexing representation of VirtualNetwork.
+  VirtualNetwork virtualNetwork() const { return static_cast<VirtualNetwork>(vnet); }
   int destination[3];               // x, y, output port of the router
 
   Cycle send_out_time;              // time of packet sent from PE
@@ -65,11 +73,22 @@ public:
 
   int current_path_index;           // Tracks progress in Source Routing
 
-  // --- Object Pool ---
-  static std::vector<Packet*> free_pool;
-  static Packet* allocate(Message t_message, int router_num_x, int* NI_num);
+  // Storage belongs to the simulation; release relinquishes endpoint ownership.
+  // Live flits retain the packet until their last reference is released.
+  static Packet* allocate(SimulationContext& sim, Message t_message, int router_num_x, int* NI_num);
   static void release(Packet* packet);
+private:
+  friend class NetworkStorage;
+  friend class NI;
+  void beginTrace(SimulationContext& sim);
+  Packet(const Packet&) = delete;
+  Packet& operator=(const Packet&) = delete;
+  Packet(Message t_message, int router_num_x, int* NI_num);
   void reset(Message t_message, int router_num_x, int* NI_num);
+  size_t live_flits = 0;
+  bool release_requested = false;
+  bool in_pool = false;
+  bool submitted = false;
 };
 
 #endif /* PACKET_HPP_ */

@@ -126,7 +126,31 @@ void Simulation::writeJson(std::ostream& destination) const {
             << ", \"duration_cycles\": " << row.end_cycle - row.start_cycle
             << ", \"completed\": " << (row.completed ? "true" : "false") << '}';
     }
-    out << "\n  ]\n}\n";
+    out << "\n  ],\n  \"accounting\": {"
+        << "\"wait_units\": \"PE-cycles for PE waits; output-port-cycles for legacy router waits\","
+        << "\"latency_additive\": false,"
+        << "\"router_service_scope\": \"MFU/distribution reservation, excluding KV retry hold\","
+        << "\"pe_network_wait_scope\": \"request-to-response wait minus assigned MC service; includes queueing and endpoint delays\","
+        << "\"packet_trace_limit\": " << context_.packet_trace_limit
+        << ",\"packets_created\": " << context_.next_packet_id
+        << ",\"packets_traced\": " << context_.packet_traces.size()
+        << ",\"pe\": [";
+    for (size_t i=0; i<vcNetwork->peAccounting().size(); ++i) {
+        if (i) out << ',';
+        const auto& p = vcNetwork->peAccounting()[i];
+        out << "{\"id\":" << i << ",\"network_wait_cycles\":" << p.network_wait_cycles
+            << ",\"memory_service_wait_cycles\":" << p.memory_service_wait_cycles << '}';
+    }
+    out << "],\"router\": [";
+    for (size_t i=0; i<vcNetwork->routerAccounting().size(); ++i) {
+        if (i) out << ',';
+        const auto& r = vcNetwork->routerAccounting()[i];
+        out << "{\"id\":" << i << ",\"blocked_port_cycles\":" << r.blocked_port_cycles
+            << ",\"blocked_router_cycles\":" << r.blocked_router_cycles
+            << ",\"service_occupied_cycles\":" << r.service_occupied_cycles
+            << ",\"kv_hold_cycles\":" << r.kv_hold_cycles << '}';
+    }
+    out << "]}\n}\n";
     destination << out.str();
 }
 

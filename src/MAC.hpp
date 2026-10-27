@@ -153,7 +153,7 @@ class MAC
 
 	MAC* nextMAC;
 
-	bool inject (int type, int d_id, int data_length, float t_output, NI* t_NI, int p_id, int mac_src);
+	bool inject (MessageKind kind, int d_id, int data_length, float t_output, NI* t_NI, int p_id, int mac_src);
 	void receive (Message* re_msg);
 	void runOneStep();
 	void accountDataWait();

@@ -12,6 +12,8 @@ VCNetwork::VCNetwork (SimulationContext& sim, int router_num, int router_num_x, 
   routerNum = router_num;
   NINum = NI_num_total;
   total_flit_hops = 0;
+  router_accounting.resize(router_num);
+  pe_accounting.resize(PE_X_NUM * PE_Y_NUM);
   router_list.reserve(router_num);
   NI_list.reserve(NI_num_total);
 
@@ -76,8 +78,11 @@ void VCNetwork::recordFlitHop(int layer_id){
   ++layer_flit_hops[layer_id];
 }
 
-void VCNetwork::recordPEWait(int layer_id, std::uint64_t network_cycles,
+void VCNetwork::recordPEWait(int pe_id, int layer_id, std::uint64_t network_cycles,
                              std::uint64_t memory_cycles){
+  auto& pe = pe_accounting.at(pe_id);
+  pe.network_wait_cycles += network_cycles;
+  pe.memory_service_wait_cycles += memory_cycles;
   total_wait_cycles.pe_network += network_cycles;
   total_wait_cycles.pe_memory += memory_cycles;
   auto& layer = layer_wait_cycles[layer_id];
@@ -85,7 +90,13 @@ void VCNetwork::recordPEWait(int layer_id, std::uint64_t network_cycles,
   layer.pe_memory += memory_cycles;
 }
 
-void VCNetwork::recordRouterWait(int layer_id, bool waiting_for_kv){
+void VCNetwork::recordRouterWait(int router_id, int layer_id, bool waiting_for_kv){
+  auto& router = router_accounting.at(router_id);
+  ++router.blocked_port_cycles;
+  if (router.last_blocked_cycle != context.cycles) {
+    ++router.blocked_router_cycles;
+    router.last_blocked_cycle = context.cycles;
+  }
   if (waiting_for_kv) {
     ++total_wait_cycles.router_kv;
     ++layer_wait_cycles[layer_id].router_kv;
@@ -254,5 +265,15 @@ VCNetwork::~VCNetwork ()
     ni = NI_list.back();
     NI_list.pop_back();
     delete ni;
+  }
+}
+
+void VCNetwork::sampleRouterOccupancy(int router_id, Cycle occupied_until, Cycle kv_retry_until) {
+  auto& router = router_accounting.at(router_id);
+  if (router.last_sample_cycle == context.cycles) return;
+  router.last_sample_cycle = context.cycles;
+  if (context.cycles < occupied_until) {
+    if (context.cycles < kv_retry_until) ++router.kv_hold_cycles;
+    else ++router.service_occupied_cycles;
   }
 }

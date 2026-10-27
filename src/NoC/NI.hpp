@@ -46,8 +46,6 @@ public:
 
   Cycle NI_cycle_npooling;
 
-  std::vector<PacketBuffer*> packetBuffer_list;
-  std::vector<std::deque<Packet*> > packet_buffer_out;  // 0 request; 1 response
   std::vector<FlitBuffer*> buffer_list;
   std::vector<int> out_vc;
   std::vector<int> state;                               // 0 I; 1 V; 2 A;
@@ -81,6 +79,29 @@ public:
 
 
 
+  // TX is intentionally unbounded in this refactor. A successful trySend
+  // transfers packet ownership to the NI; submit each allocation once.
+  // Future bounded TX can return false without transferring ownership.
+  bool trySend(Packet* packet);
+  size_t txQueued(VirtualNetwork network) const;
+
+  // Selective scan preserves legacy scheduling: skipping a not-ready packet
+  // does not prevent later eligible packets from being serviced this cycle.
+  // Only one cursor may modify a given receive queue at a time.
+  class ReceiveCursor {
+  public:
+    Packet* peek() const;
+    void skip();
+    Packet* take(); // Transfers ownership to the endpoint; caller releases it.
+  private:
+    friend class NI;
+    ReceiveCursor(NI& owner, ReceiveClass category) : owner_(owner), category_(category) {}
+    NI& owner_;
+    ReceiveClass category_;
+    size_t index_ = 0;
+  };
+  ReceiveCursor receive(ReceiveClass category) { return ReceiveCursor(*this, category); }
+
   // send
   bool flitize(Packet*, int);
 
@@ -96,6 +117,11 @@ public:
   void runOneStep();
 
   ~NI();
+private:
+  friend class NIPacketizer;
+  friend class NIPacketAssembler;
+  std::vector<PacketBuffer*> packetBuffer_list;
+  std::vector<std::deque<Packet*>> packet_buffer_out;
 
 };
 

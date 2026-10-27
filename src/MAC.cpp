@@ -142,9 +142,9 @@ MAC::MAC (int t_id, MACnet* t_net, int t_NI_id)
 }
 
 
-bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI, int p_id, int mac_src)
+bool MAC::inject (MessageKind kind, int d_id, int data_length, float t_output, NI* t_NI, int p_id, int mac_src)
 {
-    if (type == 0 && !data_wait_active) {
+    if (kind == MessageKind::DataRequest && !data_wait_active) {
         data_wait_active = true;
         data_wait_memory_ready = false;
         data_wait_last_cycle = context.cycles;
@@ -156,7 +156,7 @@ bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI,
     // MC responses are scheduled after the MC has assigned its pecycle.  Keep
     // the ready interval on the requesting PE, rather than on the shared MC,
     // because several PEs may have outstanding requests simultaneously.
-    if (type == 1 && mac_src >= 0 && mac_src < static_cast<int>(net->MAC_list.size())) {
+    if (kind == MessageKind::DataResponse && mac_src >= 0 && mac_src < static_cast<int>(net->MAC_list.size())) {
         MAC* requester = net->MAC_list[mac_src];
         if (requester->data_wait_active) {
             requester->data_wait_memory_ready = true;
@@ -166,7 +166,7 @@ bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI,
         }
     }
 
-    Message msg;
+    Message msg{};
     msg.NI_id = NI_id;
     msg.mac_id = mac_src;                       //MAC
     msg.data_length = data_length;
@@ -196,13 +196,14 @@ bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI,
     msg.layer_id = net->c_layer;
     msg.slave_id = d_id;                       //NI
     msg.source_id = NI_id;                     // NI
-    msg.type = type;                           // 0 1 2 3
+    msg.kind = kind;                           // 0 1 2 3
 
     // Packet* packet = new Packet(std::move(msg), X_NUM, t_NI->NI_num);
-    Packet* packet = Packet::allocate(std::move(msg), X_NUM, t_NI->NI_num);
+    Packet* packet = Packet::allocate(context, std::move(msg), X_NUM, t_NI->NI_num);
     packet->send_out_time = pecycle;
     packet->in_net_time = pecycle;
-    net->vcNetwork->NI_list[NI_id]->packetBuffer_list[packet->vnet]->enqueue(packet);
+
+    net->vcNetwork->NI_list[NI_id]->trySend(packet);
 
     return true;
 }
@@ -225,7 +226,7 @@ void MAC::accountDataWait()
     }
 
     const std::uint64_t elapsed = end - begin;
-    net->vcNetwork->recordPEWait(data_wait_layer, elapsed - memory_cycles,
+    net->vcNetwork->recordPEWait(id, data_wait_layer, elapsed - memory_cycles,
                                   memory_cycles);
     data_wait_last_cycle = end;
 }
@@ -247,7 +248,7 @@ void MAC::runOneStep()
     // output stationary (neuron based calculation)
     if (pecycle < context.cycles){
         // initial idle state
-        int stats1;
+
         if(selfstatus == 0)
         {
             if(routing_table.size()==0)
@@ -292,18 +293,9 @@ void MAC::runOneStep()
                         !matmul_activation_valid || matmul_activation_row != matmul_requested_row;
                 }
             }
-            inject(0, dest_mem_id, 1, request, net->vcNetwork->NI_list[NI_id], context.packet_id_base + request, id);
+            inject(MessageKind::DataRequest, dest_mem_id, 1, request, net->vcNetwork->NI_list[NI_id], context.packet_id_base + request, id);
             selfstatus = 2;
             pecycle = context.cycles;
-#ifdef Countlatency
-            stats1 = (context.packet_id_base + tmp_request)*3;
-            if(stats1 < CountNum) {
-                context.legacy_packet_trace[stats1][0] = net->c_layer;
-                context.legacy_packet_trace[stats1][1] = 0;
-                context.legacy_packet_trace[stats1][2] = id;
-                context.legacy_packet_trace[stats1][3] = pecycle;
-            }
-#endif
         }
         else if(selfstatus == 2)
         {
@@ -472,7 +464,7 @@ void MAC::runOneStep()
                 outfeature = 0.0;
                 selfstatus = 4;
                 pecycle = context.cycles + 1;
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
+                inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 return;
             }
 #endif
@@ -511,13 +503,7 @@ void MAC::runOneStep()
                 selfstatus = 4;                             // ready for this computation
                 pecycle = context.cycles + 1;                       // sync cycles
 
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
-#ifdef Countlatency
-                stats1 = (context.packet_id_base + tmp_request)*3 + 2;
-                if(stats1 < CountNum) {
-                    context.legacy_packet_trace[stats1][3] = pecycle;
-                }
-#endif
+                inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 return;
             }
             else if (fn == 12)                              // average pooling
@@ -531,13 +517,7 @@ void MAC::runOneStep()
                 selfstatus = 4;                             // ready for this computation
                 pecycle = context.cycles + 1;                       // sync cycles
 
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
-#ifdef Countlatency
-                stats1 = (context.packet_id_base + tmp_request)*3 + 2;
-                if(stats1 < CountNum) {
-                    context.legacy_packet_trace[stats1][3] = pecycle;
-                }
-#endif
+                inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 //packet_id++;
                 return;
             }
@@ -561,12 +541,8 @@ void MAC::runOneStep()
                             ? ((static_cast<Cycle>(index) + PE_NUM_OP) / PE_NUM_OP) * ADD_LATENCY
                             : static_cast<Cycle>(index + 1) * PE_GATE_LATENCY;
                         pecycle = context.cycles + compute_cycles * PE_FREQ_RATIO;
-                        inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id],
+                        inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id],
                                context.packet_id_base + tmpm, id);
-#ifdef Countlatency
-                        const int result_stats = (context.packet_id_base + tmpm) * 3 + 2;
-                        if (result_stats < CountNum) context.legacy_packet_trace[result_stats][3] = pecycle;
-#endif
                     }
                     return;
                 }
@@ -826,14 +802,8 @@ void MAC::runOneStep()
                     pecycle    = context.cycles + calctime;
 
                     this->tmpm = (current_row * q_dim) + target_idx; 
-                    inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
+                    inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
 
-                    #ifdef Countlatency
-                        int stats1 = (context.packet_id_base + tmp_request) * 3 + 2;
-                        if (stats1 < CountNum) {
-                            context.legacy_packet_trace[stats1][3] = pecycle;
-                        }
-                    #endif
 
                     return;
                 }
@@ -915,19 +885,13 @@ void MAC::runOneStep()
                             if (row_size > m_size) outfeature += weight[weight_offset + m_size];
                         #endif
                         tmpm = matmul_tile_start_task + tile_idx;
-                        inject(2, dest_mem_id, 1, outfeature,
+                        inject(MessageKind::Result, dest_mem_id, 1, outfeature,
                                net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmpm, id);
                     }
                 } else {
-                    inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
+                    inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 }
 
-#ifdef Countlatency
-                int stats1 = (context.packet_id_base + tmp_request)*3 + 2;
-                if(stats1 < CountNum) {
-                    context.legacy_packet_trace[stats1][3] = pecycle;
-                }
-#endif
                 return;
             }
 
@@ -994,19 +958,12 @@ void MAC::runOneStep()
                     // Dense layers in the legacy model always carry a bias.
                     if (row_size > m_size) outfeature += weight[weight_offset + m_size];
                     tmpm = matmul_tile_start_task + tile_idx;
-                    inject(2, dest_mem_id, 1, outfeature,
+                    inject(MessageKind::Result, dest_mem_id, 1, outfeature,
                            net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmpm, id);
                 }
             } else {
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
+                inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
             }
-#ifdef Countlatency
-            //statistics
-            stats1 = (context.packet_id_base + tmp_request)*3 + 2;
-            if(stats1 < CountNum) {
-                context.legacy_packet_trace[stats1][3] = pecycle;
-            }
-#endif
             //packet_id++;
 #endif
 #ifdef newpooling
@@ -1017,27 +974,13 @@ void MAC::runOneStep()
                     {
                         this->tmpm = c;
                         this->tmpch = this->n_tmpch;
-                        inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
-#ifdef Countlatency
-                        if((context.packet_id_base + tmp_request)*3+2 < CountNum) {
-                        context.legacy_packet_trace[(context.packet_id_base + tmp_request)*3+2][6] = pecycle;}
-#endif
+                        inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                         //packet_id++;
                     }
                 }
             }
             else{ // normal send out
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
-#ifdef Countlatency
-                //statistics
-                stats1 = (context.packet_id_base + tmp_request)*3 + 2;
-                if(stats1 < CountNum) {
-                    context.legacy_packet_trace[stats1][0] = net->c_layer;
-                    context.legacy_packet_trace[stats1][1] = 2;
-                    context.legacy_packet_trace[stats1][2] = id;
-                    context.legacy_packet_trace[stats1][3] = pecycle;
-                }
-#endif
+                inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 //packet_id++;
             }
 #endif

@@ -17,6 +17,7 @@ struct SimulationOptions {
     std::string model_file = DEFAULT_NNMODEL_FILENAME;
     std::string weight_file = DEFAULT_NNWEIGHT_FILENAME;
     std::string input_file = DEFAULT_NNINPUT_FILENAME;
+    size_t packet_trace_limit = CountNum;
     Cycle max_cycles = 50000000000ULL;
 };
 
@@ -34,6 +35,7 @@ public:
     const SimulationResult& result() const { return result_; }
     void writeJson(std::ostream& out) const;
     void writeLayerCsv(std::ostream& out) const;
+    void writePacketTraceCsv(std::ostream& out) const;
     const MACnet& accelerator() const;
     const VCNetwork& network() const;
 private:

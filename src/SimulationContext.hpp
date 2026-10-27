@@ -4,6 +4,10 @@
 #include "SimulationTime.hpp"
 #include "parameters.hpp"
 #include <vector>
+#include <memory>
+
+class NetworkStorage;
+#include "PacketTrace.hpp"
 
 struct NIStatistics {
     int count_s = {};
@@ -31,10 +35,18 @@ struct NIStatistics {
 
 // One clock per simulation. Timestamps retain the legacy NoC-cycle units.
 struct SimulationContext {
+    SimulationContext();
+    ~SimulationContext();
+    SimulationContext(const SimulationContext&) = delete;
+    SimulationContext& operator=(const SimulationContext&) = delete;
+    // Outlives the network and releases all backing storage, including aborted traffic.
+    std::unique_ptr<NetworkStorage> objects;
     Cycle cycles = 0;
     // Legacy task-based packet ID base; retain its allocation scheme in this phase.
     int packet_id_base = 0;
-    std::vector<std::vector<std::int64_t>> legacy_packet_trace;
+    PacketId next_packet_id = 0;
+    size_t packet_trace_limit = CountNum;
+    std::vector<PacketTrace> packet_traces;
     NIStatistics ni_statistics;
 };
 

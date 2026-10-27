@@ -27,7 +27,7 @@ public:
       packet = t_packet;
       sched_time = t_cycles;
    */
-  Flit(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, Cycle t_cycles, int t_pid);
+
 
   const static int length;  // length in byte
   int id;   // The sequence id in a packet
@@ -55,10 +55,16 @@ public:
 
   Packet * packet;
 
-  // --- Object Pool ---
-  static std::vector<Flit*> free_pool;
+  // Allocate from the parent packet's simulation; every live flit retains its packet.
   static Flit* allocate(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, Cycle t_cycles, int t_pid);
   static void release(Flit* flit);
+private:
+  friend class NetworkStorage;
+  Flit(const Flit&) = delete;
+  Flit& operator=(const Flit&) = delete;
+  SimulationContext* context = nullptr;
+  bool in_pool = false;
+  Flit(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, Cycle t_cycles, int t_pid);
   void reset(int t_id, int t_type, int t_vnet, int t_vc, Packet* t_packet, Cycle t_cycles, int t_pid);
 };
 

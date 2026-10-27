@@ -331,7 +331,8 @@ void RInPort::getSwitch(){
 }
 
 RInPort::~RInPort(){
-
+    // The destination input port owns its link; source output ports only refer to it.
+    delete in_link;
 }
 
 
