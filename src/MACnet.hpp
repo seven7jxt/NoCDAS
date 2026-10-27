@@ -6,6 +6,8 @@
 #ifndef MACNET_HPP_
 #define MACNET_HPP_
 
+#include "SimulationContext.hpp"
+
 #include <cmath>
 #include <map>
 #include <vector>
@@ -21,11 +23,9 @@
 
 using namespace std;
 
-extern int packet_id;
 
-extern Cycle cycles;
 
-extern vector<vector<std::int64_t>> DNN_latency;
+
 
 // NoC
 class VCNetwork;
@@ -35,6 +35,7 @@ class MAC;
 class MACnet
 {
 public:
+  SimulationContext& context;
 
   /** @brief MAC Network
    *
@@ -144,6 +145,10 @@ public:
     void run_terminal_gate();
 
 	~MACnet ();
+private:
+    bool reported_nonfinite = false;
+    std::vector<bool> is_dest = std::vector<bool>(TOT_NUM, false);
+    bool init_dest = false;
 };
 
 #endif /* MACNET_HPP_ */

@@ -16,7 +16,7 @@ class Link;
 class ROutPort : public Port
 {
 public:
-  ROutPort (int t_id, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_depth);
+  ROutPort (SimulationContext& sim, int t_id, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_depth);
   ~ROutPort();
   Link * out_link;
 };

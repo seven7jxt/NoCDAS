@@ -4,7 +4,8 @@
 
 #include "VCNetwork.hpp"
 
-VCNetwork::VCNetwork (int router_num, int router_num_x, int NI_num_total, int* NI_num, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth)
+VCNetwork::VCNetwork (SimulationContext& sim, int router_num, int router_num_x, int NI_num_total, int* NI_num, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth)
+    : context(sim)
 {
   cout << "Object is being created" << endl;
   int NI_seq = 0;
@@ -206,13 +207,13 @@ void VCNetwork::average_URS_latency(){
 
 void VCNetwork::show_LCS_distribution(){
   for(int i=0;i<DISTRIBUTION_NUM;i++)
-    cout << NI_list[0]->LCS_delay_distribution[i] << endl;
-  cout << "worst case: " << NI_list[0]->worst_LCS << endl;
+    cout << context.ni_statistics.LCS_delay_distribution[i] << endl;
+  cout << "worst case: " << context.ni_statistics.worst_LCS << endl;
 }
 void VCNetwork::show_URS_distribution(){
   for(int i=0;i<DISTRIBUTION_NUM;i++)
-    cout << NI_list[0]->URS_delay_distribution[i] << endl;
-  cout << "worst case: " << NI_list[0]->worst_URS << endl;
+    cout << context.ni_statistics.URS_delay_distribution[i] << endl;
+  cout << "worst case: " << context.ni_statistics.worst_URS << endl;
 }
 
 //void VCNetwork::show_VCR_buffer_state(){

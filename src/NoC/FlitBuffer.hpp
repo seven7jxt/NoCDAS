@@ -6,6 +6,8 @@
 #ifndef VC_FLITBUFFER_HPP_
 #define VC_FLITBUFFER_HPP_
 
+#include "../SimulationContext.hpp"
+
 #include "Flit.hpp"
 #include <deque>
 
@@ -13,7 +15,8 @@ using namespace std;
 
 class FlitBuffer{
 public:
-  FlitBuffer(int t_vc, int t_vnet, int t_id, int t_depth);
+  SimulationContext& context;
+  FlitBuffer(SimulationContext& sim, int t_vc, int t_vnet, int t_id, int t_depth);
 
   Flit* read();
   Flit* readLast();

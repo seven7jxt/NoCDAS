@@ -22,12 +22,12 @@ class FlitBuffer;
 class VCRouter;
 class Link;
 
-extern Cycle cycles;
+
 
 class RInPort : public Port{
 public:
 
-  RInPort(int t_id, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_depth, NRBase * t_owner, Link * t_in_link);
+  RInPort(SimulationContext& sim, int t_id, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_depth, NRBase * t_owner, Link * t_in_link);
 
   void vc_request();
 

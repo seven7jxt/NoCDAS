@@ -7,6 +7,8 @@
 #ifndef MAC_HPP_
 #define MAC_HPP_
 
+#include "SimulationContext.hpp"
+
 #include <vector>
 #include <stdio.h>
 #include <iostream>
@@ -55,9 +57,7 @@
 
 using namespace std;
 
-extern int packet_id;
-extern Cycle cycles;
-extern vector<vector<std::int64_t>> DNN_latency;
+
 
 class MACnet;
 class Packet;
@@ -65,6 +65,7 @@ class Packet;
 class MAC
 {
 	public:
+  SimulationContext& context;
   /** @brief MAC
    *
    */

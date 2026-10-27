@@ -1,267 +1,65 @@
-//======================================================================================
-// Name        : NoCDAS
-// Author      : loghorizon
-// Version     : 2024 Jul
-// Copyright   : KTH
-// Description : A Cycle-Accurate NoC-based Deep Neural Network Accelerator Simulator
-//======================================================================================
-
-
-#include <cmath>
+#include "Simulation.hpp"
+#include <chrono>
 #include <iostream>
 #include <fstream>
-#include <vector>
-#include <deque>
-#include <iomanip>
-#include <stdio.h>
-#include <string.h>
-#include <chrono>
-#include "parameters.hpp"
-#include "NoC/VCNetwork.hpp"
-#include "MACnet.hpp"
-#include "Model.hpp"
+#include <stdexcept>
+#include <string>
 
-using namespace std;
-
-// NoC
-class VCNetwork;
-
-int packet_id;
-
-// Statistics
-vector<vector<std::int64_t>> DNN_latency;
-
-
-// DNN
-Cycle cycles;
-int ch;
-int layer;
-
-int PE_NUM = PE_X_NUM * PE_Y_NUM;
-
-char GlobalParams::NNmodel_filename[128] = DEFAULT_NNMODEL_FILENAME;
-char GlobalParams::NNweight_filename[128] = DEFAULT_NNWEIGHT_FILENAME;
-char GlobalParams::NNinput_filename[128] = DEFAULT_NNINPUT_FILENAME;
-
-void parseCmdLine(int arg_num, char *arg_vet[])
-{
-    if (arg_num == 1)
-	cout << "Running with default parameters" << endl;
-    else {
-		for (int i = 1; i < arg_num; i++) {
-			if (!strcmp(arg_vet[i], "-NNmodel"))
-				strcpy(GlobalParams::NNmodel_filename, arg_vet[++i]);
-			else if (!strcmp(arg_vet[i], "-NNweight"))
-				strcpy(GlobalParams::NNweight_filename, arg_vet[++i]);
-			else if (!strcmp(arg_vet[i], "-NNinput"))
-				strcpy(GlobalParams::NNinput_filename, arg_vet[++i]);
-			else {
-				cerr << "Error: Invalid option: " << arg_vet[i] << endl;
-				exit(1);
-			}
-		}
-
-    }
-}
-
-int main(int arg_num, char *arg_vet[]) {
-
-	cout << "Initialize" << endl;
+int main(int argc, char** argv) {
+    try {
+        std::cout << "Initialize" << std::endl;
 #ifdef cNoC_MODE
-	cout << "NOTE: Running in cNoC_MODE" << endl;
+        std::cout << "NOTE: Running in cNoC_MODE" << std::endl;
 #endif
-
-	parseCmdLine(arg_num, arg_vet);
-
-	chrono::steady_clock::time_point begin = chrono::steady_clock::now();
-
-	Model* cnnmodel = new Model();
-	cnnmodel->load();
-
-#ifdef fulleval
-	cnnmodel->loadin();
-	cnnmodel->loadweight();
-#elif defined randomeval
-	cnnmodel->randomin();
-	cnnmodel->randomweight();
-#endif	
-
-	// statistics
-	// refer to output neuron id (tmpch * ox * oy + tmpm)
-#ifdef Countlatency
-	DNN_latency.resize(CountNum);
-	for(int i=0;i<CountNum;i++){
-		DNN_latency[i].assign(8, 0);
-	}
-#endif
-	// create vc
-	packet_id = 0;
-	int vn = VN_NUM;
-	int vc_per_vn = VC_PER_VN;
-	int vc_priority_per_vn = VC_PRIORITY_PER_VN;
-	int flit_per_vc = INPORT_FLIT_BUFFER_SIZE;
-	int router_num = TOT_NUM;
-	int router_x_num = X_NUM;
-	int NI_total = TOT_NUM; //64
-	int NI_num[TOT_NUM];
-	for (int i=0;i<TOT_NUM;i++){
-		NI_num[i] = 1;
-	}
-
-	VCNetwork* vcNetwork = new VCNetwork(router_num, router_x_num, NI_total, NI_num, vn, vc_per_vn, vc_priority_per_vn, flit_per_vc);
-
-	
-	// create the macnet controller
-	MACnet* macnet = new MACnet(PE_NUM, PE_X_NUM, PE_Y_NUM, cnnmodel, vcNetwork);
-
-	cycles = 0;
-	auto simulate_cycles = 50000000000ULL; // 50 billion cycles
-
-	// Main simulation
-	for(; cycles < simulate_cycles; cycles++){
-		macnet->checkStatus();
-		//cout << "check status: " << cycles << endl;
-
-		if(macnet->c_layer == macnet->n_layer) break;
-
-		macnet->runOneStep();
-
-		vcNetwork->runOneStep();
-
-		if(cycles%PRINT==0) {cout << "Running cycles: " << cycles << endl;}
-	}
-
-// #ifdef fulleval
-// 	for (float j: macnet->output_table[0])
-// 	{
-// 		cout << j << ' ';
-// 	}
-// 	cout << endl;
-// #endif
-
-// 	cout << "Cycles: " << cycles << endl;
-
-// 	cout << "Packet id: " << packet_id << endl;
-
-// #ifdef Countlatency
-// 	int maxoutnum = CountNum;
-// 	ofstream outfile_delay("./src/output/lenettrace.txt", ios::out);
-// 	if (packet_id*3 <= CountNum) {maxoutnum = packet_id*3;}
-// 	for(int i=0; i<maxoutnum; i++){
-// 	  for(int j=0; j<8; j++){
-// 		  outfile_delay << DNN_latency[i][j] << ' ';
-// 	  }
-// 	  outfile_delay << endl;
-// 	}
-// 	outfile_delay.close();
-// #endif
-// 	chrono::steady_clock::time_point end = chrono::steady_clock::now();
-// 	cout << "Execution time (sec) = " <<  (chrono::duration_cast<chrono::microseconds>(end - begin).count()) /1000000.0  << endl;
-
-// 	cout << "!!END!!" << endl;
-// 	delete macnet;
-// 	delete cnnmodel;
-// 	return 0;
-// }
-
-#ifdef fulleval
-    for (float j: macnet->output_table[0]) {
-        cout << j << ' ';
-    }
-    cout << endl;
-
-    std::string filename = "output_baseline.txt";
-
-#ifndef cNoC_MODE
-    // Baseline execution
-    std::ofstream out_file(filename);
-    if (out_file.is_open()) {
-        for (float j : macnet->output_table[0]) {
-            out_file << j << " ";
-        }
-        out_file.close();
-        cout << "\n=> [BASELINE] Output saved in " << filename << endl;
-    }
-#else
-    // if we're using cNoC_MODE, we want to compare the output with the baseline
-    std::ifstream in_file(filename);
-    if (in_file.is_open()) {
-        std::vector<float> baseline_out;
-        float val;
-        while (in_file >> val) {
-            baseline_out.push_back(val);
-        }
-        in_file.close();
-
-        if (baseline_out.size() == macnet->output_table[0].size()) {
-            float dot_product = 0.0f, norm_a = 0.0f, norm_b = 0.0f;
-            float mae = 0.0f;
-            int n = baseline_out.size();
-
-            for (int i = 0; i < n; ++i) {
-                float a = baseline_out[i];
-                float b = macnet->output_table[0][i];
-                dot_product += a * b;
-                norm_a += a * a;
-                norm_b += b * b;
-                mae += std::abs(a - b);
+        SimulationOptions options;
+        std::string json_path, csv_path;
+        if (argc == 1) std::cout << "Running with default parameters" << std::endl;
+        for (int i = 1; i < argc; ++i) {
+            const std::string flag = argv[i];
+            if (flag == "--help") {
+                std::cout << "NoCDASim [-NNmodel FILE] [-NNweight FILE] [-NNinput FILE] "
+                             "[--max-cycles N] [--report-json FILE] [--report-csv FILE]\n";
+                return 0;
             }
-
-            float cosine_similarity = dot_product / (std::sqrt(norm_a) * std::sqrt(norm_b));
-            mae /= n;
-
-            cout << "\n=======================================================\n";
-            cout << "   Precision Analysis (cNoC In-Transit vs Baseline)\n";
-            cout << "=======================================================\n";
-            cout << "Cosine Similarity : " << cosine_similarity * 100.0f << " %\n";
-            cout << "Mean Absolute Err : " << mae << "\n";
-            cout << "=======================================================\n";
-            
-            if (cosine_similarity > 0.98f) {
-                cout << "SUCCESS: Tensors are directionally equivalent!\n" << endl;
-            } else {
-                cout << "WARNING: Structure mismatch detected.\n" << endl;
-            }
-        } else {
-            cout << "\nError: Output dimensions do not match (" 
-                 << baseline_out.size() << " vs " << macnet->output_table[0].size() << ")" << endl;
+            if (i + 1 == argc) throw std::invalid_argument("Missing value for " + flag);
+            const std::string value = argv[++i];
+            if (flag == "-NNmodel") options.model_file = value;
+            else if (flag == "-NNweight") options.weight_file = value;
+            else if (flag == "-NNinput") options.input_file = value;
+            else if (flag == "--report-json") json_path = value;
+            else if (flag == "--report-csv") csv_path = value;
+            else if (flag == "--max-cycles") {
+                if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+                    throw std::invalid_argument("Invalid --max-cycles: " + value);
+                options.max_cycles = std::stoull(value);
+            } else throw std::invalid_argument("Invalid option: " + flag);
         }
-    } else {
-        cout << "\nWARNING: Run the simulation WITHOUT cNoC_MODE first to create the baseline!" << endl;
+        const auto begin = std::chrono::steady_clock::now();
+        Simulation simulation(options);
+        const auto status = simulation.run();
+        simulation.reportLegacy();
+        if (!json_path.empty()) {
+            std::ofstream out(json_path);
+            if (!out) throw std::runtime_error("Cannot open JSON report: " + json_path);
+            simulation.writeJson(out);
+            out.close();
+            if (!out) throw std::runtime_error("Cannot write JSON report: " + json_path);
+        }
+        if (!csv_path.empty()) {
+            std::ofstream out(csv_path);
+            if (!out) throw std::runtime_error("Cannot open CSV report: " + csv_path);
+            simulation.writeLayerCsv(out);
+            out.close();
+            if (!out) throw std::runtime_error("Cannot write CSV report: " + csv_path);
+        }
+        const auto end = std::chrono::steady_clock::now();
+        std::cout << "Execution time (sec) = "
+                  << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() / 1000000.0
+                  << std::endl;
+        std::cout << "!!END!!" << std::endl;
+        return status == StopReason::Completed ? 0 : 2;
+    } catch (const std::exception& error) {
+        std::cerr << "Error: " << error.what() << std::endl;
+        return 1;
     }
-#endif
-#endif
-
-    cout << "Cycles: " << cycles << endl;
-    cout << "Packet id: " << packet_id << endl;
-    cout << "Flit size (bytes): " << FLIT_LENGTH << endl;
-    cout << "Total inter-router flit-hops: " << vcNetwork->getTotalFlitHops() << endl;
-    cout << "Total inter-router byte-hops: " << vcNetwork->getTotalByteHops() << endl;
-    const WaitCounters wait_cycles = vcNetwork->getTotalWaitCycles();
-    cout << "Total wait-cycles: pe-net=" << wait_cycles.pe_network
-         << " pe-mem=" << wait_cycles.pe_memory
-         << " router-mfu=" << wait_cycles.router_mfu
-         << " router-kv=" << wait_cycles.router_kv << endl;
-    cout << "Total KV evictions: " << vcNetwork->getTotalKVEvictions() << endl;
-    macnet->reportSramPeaks(cout);
-
-#ifdef Countlatency
-	int maxoutnum = CountNum;
-	ofstream outfile_delay("./src/output/lenettrace.txt", ios::out);
-	if (packet_id*3 <= CountNum) {maxoutnum = packet_id*3;}
-	for(int i=0; i<maxoutnum; i++){
-	  for(int j=0; j<8; j++){
-		  outfile_delay << DNN_latency[i][j] << ' ';
-	  }
-	  outfile_delay << endl;
-	}
-	outfile_delay.close();
-#endif
-	chrono::steady_clock::time_point end = chrono::steady_clock::now();
-	cout << "Execution time (sec) = " <<  (chrono::duration_cast<chrono::microseconds>(end - begin).count()) /1000000.0  << endl;
-
-	cout << "!!END!!" << endl;
-	delete macnet;
-	delete cnnmodel;
-	return 0;
 }

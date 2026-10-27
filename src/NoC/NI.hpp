@@ -6,6 +6,8 @@
 #ifndef NI_HPP_
 #define NI_HPP_
 
+#include "../SimulationContext.hpp"
+
 #include "FlitBuffer.hpp"
 #include "Link.hpp"
 #include "PacketBuffer.hpp"
@@ -19,8 +21,7 @@
 #include <fstream>
 #include <cmath>
 
-extern Cycle cycles;
-extern vector<vector<std::int64_t>> DNN_latency;
+
 
 class FlitBuffer;
 class VCNetwork;
@@ -29,14 +30,11 @@ class PacketBuffer;
 class ROutPort;
 class Flit;
 
-extern int packet_id;
-extern std::vector<std::vector<int>> LCS_packet_delay;
-extern std::vector<std::vector<int>> URS_packet_delay;
-extern std::ofstream flit_trace;
 
 class NI: public NRBase
 {
 public:
+  SimulationContext& context;
   NI (int t_id, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth, int* t_NI_num);
 
   int* NI_num;
@@ -69,10 +67,7 @@ public:
 
   RInPort* in_port;
 
-  static int count_s, count_r;
-  static int count_s_resp, count_r_resp;
 
-  static int count_input;
 
   int num_flit;
 
@@ -81,26 +76,10 @@ public:
   std::uint64_t total_delay_URS;
   int total_num_URS;
 
-  static std::int64_t worst_LCS;
-  static std::int64_t worst_URS;
 
-  static int URS_delay_distribution[DISTRIBUTION_NUM];
-  static int LCS_delay_distribution[DISTRIBUTION_NUM];
 
-  static int URS_latency_single_dis[100];
-  static int URS_latency_single_count;
-  static int URS_latency_single_total;
-  static int URS_latency_single_worst;
 
-  static int LCS_latency_single_dis[100];
-  static int LCS_latency_single_count;
-  static int LCS_latency_single_total;
-  static int LCS_latency_single_worst;
 
-  static int converse_latency_single_dis[100];
-  static int converse_latency_single_count;
-  static int converse_latency_single_total;
-  static int converse_latency_single_worst;
 
   // send
   bool flitize(Packet*, int);

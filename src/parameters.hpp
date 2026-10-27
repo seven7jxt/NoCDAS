@@ -206,12 +206,4 @@
 #define CNOC_GATE_BATCH_PAIRS PE_GATE_BATCH_PAIRS
 #endif
 
-// reserve string for input file paths
-struct GlobalParams {
-	static char NNmodel_filename[128];
-	static char NNweight_filename[128];
-	static char NNinput_filename[128];
-};
-
-
 #endif /* PARAMETERS_HPP_ */

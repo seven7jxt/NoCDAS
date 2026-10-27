@@ -15,6 +15,7 @@ static_assert(ROUTER_SRAM_WIDTH > 0 &&
               "Router SRAM interface must hold a whole number of data elements");
 
 VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth)
+    : context(t_vcNetwork->context)
 {
     id[0] = t_id[0];  
     id[1] = t_id[1];  
@@ -38,7 +39,7 @@ VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t
 
     for (int i=0; i< in_out_port_num; i++){
         Link * link = new Link((RInPort*)NULL);
-        RInPort * t_rInPort = new RInPort(i, t_vn_num, t_vc_per_vn, t_vc_priority_per_vn, t_in_depth, this, link); 
+        RInPort * t_rInPort = new RInPort(context, i, t_vn_num, t_vc_per_vn, t_vc_priority_per_vn, t_in_depth, this, link);
         t_rInPort->rid[0] = t_id[0];
         t_rInPort->rid[1] = t_id[1];
 
@@ -46,13 +47,13 @@ VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t
         in_port_list.push_back(t_rInPort);
 
     #ifdef outPortNoInfinite
-        ROutPort * t_rOutPort = new ROutPort(i, 1, 1, 0, 1); 
+        ROutPort * t_rOutPort = new ROutPort(context, i, 1, 1, 0, 1);
         if(i==4) 
         {
-            t_rOutPort = new ROutPort(i, 1, 1, 0, 2);
+            t_rOutPort = new ROutPort(context, i, 1, 1, 0, 2);
         }
     #else
-        ROutPort * t_rOutPort = new ROutPort(i, 1, 1, 0, INFINITE);
+        ROutPort * t_rOutPort = new ROutPort(context, i, 1, 1, 0, INFINITE);
     #endif
         out_port_list.push_back(t_rOutPort);
     }
@@ -587,11 +588,11 @@ void VCRouter::outPortDequeue(){
     for(int count = 0; count < port_num; count++){ 
         int i = (rr_out_port + count) % port_num;
 
-        if(out_port_list[i]->buffer_list[0]->cur_flit_num != 0 && out_port_list[i]->buffer_list[0]->read()->sched_time < cycles){
+        if(out_port_list[i]->buffer_list[0]->cur_flit_num != 0 && out_port_list[i]->buffer_list[0]->read()->sched_time < context.cycles){
             Flit* flit = out_port_list[i]->buffer_list[0]->read();
 
             if (flit->packet->message.type == 4 || flit->packet->message.type == 5) {
-                if (cycles < mfu_occupied_until) {
+                if (context.cycles < mfu_occupied_until) {
                     // A KV retry occupies the router-wide MFU, but other
                     // eligible flits blocked by that same hold are waiting
                     // for the MFU, not for their own KV data.
@@ -599,7 +600,7 @@ void VCRouter::outPortDequeue(){
                         flit->packet->message.type == 5 &&
                         flit->packet->message.compute_op == ATTENTION;
                     const bool waiting_for_kv = is_attention &&
-                                                cycles < kv_retry_until;
+                                                context.cycles < kv_retry_until;
                     mfu_waiting_for_kv = waiting_for_kv;
                     vcNetwork->recordRouterWait(flit->packet->message.layer_id,
                                                 waiting_for_kv);
@@ -628,8 +629,8 @@ void VCRouter::outPortDequeue(){
                     if (kv_token_count < expected_local_tokens) {
                         vcNetwork->recordRouterWait(flit->packet->message.layer_id, true);
                         mfu_waiting_for_kv = true;
-                        kv_retry_until = cycles + 2;
-                        mfu_occupied_until = cycles + 2;
+                        kv_retry_until = context.cycles + 2;
+                        mfu_occupied_until = context.cycles + 2;
                         continue;
                     }
                 }
@@ -661,7 +662,7 @@ void VCRouter::outPortDequeue(){
                 }
                 
                 compute_delay = std::max(1, compute_delay);
-                mfu_occupied_until = cycles + compute_delay;
+                mfu_occupied_until = context.cycles + compute_delay;
             }
             else if (flit->packet->message.type == 5) {
                 const int matmul_macs = computeInTransit(flit, i);
@@ -693,7 +694,7 @@ void VCRouter::outPortDequeue(){
                     compute_delay = MAC_LATENCY; 
                 }
 
-                mfu_occupied_until = cycles + compute_delay; 
+                mfu_occupied_until = context.cycles + compute_delay;
             }
 
             out_port_list[i]->out_link->rInPort->buffer_list[flit->vc]->enqueue(flit);
@@ -704,10 +705,10 @@ void VCRouter::outPortDequeue(){
                 vcNetwork->recordFlitHop(flit->packet->message.layer_id);
             }
             
-            flit->sched_time = cycles + compute_delay + LINK_TIME - 1;
+            flit->sched_time = context.cycles + compute_delay + LINK_TIME - 1;
 
             flit->trace_node.push_back(out_port_list[i]->out_link->rInPort->rid[0]*X_NUM + out_port_list[i]->out_link->rInPort->rid[1]);
-            flit->trace_time.push_back(cycles + LINK_TIME - 1);
+            flit->trace_time.push_back(context.cycles + LINK_TIME - 1);
 
             port_total_utilization++;
             if (i<=3) port_utilization_innet++;
@@ -753,7 +754,7 @@ bool VCRouter::allocateSRAM(int num_floats) {
 void VCRouter::recordSramUsage() {
     sram_stats.observe(static_cast<std::uint64_t>(local_weights.size()) * DATA_BYTES, 0,
                        static_cast<std::uint64_t>(local_kv_cache.size()) * DATA_BYTES,
-                       cycles, sram_layer);
+                       context.cycles, sram_layer);
 }
 
 void VCRouter::storeWeight(float weight_value) {

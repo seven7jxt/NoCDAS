@@ -57,6 +57,7 @@ void MACnet::reportSramPeaks(std::ostream& out) const {
 }
 
 MACnet::MACnet (int mac_num, int t_pe_x, int t_pe_y, Model *m, VCNetwork* t_Network)
+    : context(t_Network->context)
 {
     macNum = mac_num;
     MAC_list.reserve(mac_num);
@@ -516,8 +517,8 @@ void MACnet::inject_cNoC_traffic() {
                 dist_msg.destination = target_router; 
                 dist_msg.type = 4; 
                 dist_msg.compute_op = o_fn;
-                dist_msg.out_cycle = cycles; 
-                dist_msg.signal_id = packet_id + y;
+                dist_msg.out_cycle = context.cycles;
+                dist_msg.signal_id = context.packet_id_base + y;
                 dist_msg.layer_id = c_layer;
                 dist_msg.sequence_id = y;
 
@@ -547,8 +548,8 @@ void MACnet::inject_cNoC_traffic() {
                 dist_msg.data_length = dist_msg.data.size();
                 
                 Packet* p = Packet::allocate(std::move(dist_msg), X_NUM, mem_ni->NI_num);
-                p->send_out_time = cycles;
-                p->in_net_time = cycles;
+                p->send_out_time = context.cycles;
+                p->in_net_time = context.cycles;
                 mem_ni->packetBuffer_list[p->vnet]->enqueue(p);
             }
         } else {
@@ -558,8 +559,8 @@ void MACnet::inject_cNoC_traffic() {
                 dist_msg.destination = router_id; 
                 dist_msg.type = 4; 
                 dist_msg.compute_op = o_fn;
-                dist_msg.out_cycle = cycles; 
-                dist_msg.signal_id = packet_id;
+                dist_msg.out_cycle = context.cycles;
+                dist_msg.signal_id = context.packet_id_base;
                 dist_msg.layer_id = c_layer;
 
                 auto router = this->vcNetwork->router_list[router_id];
@@ -582,8 +583,8 @@ void MACnet::inject_cNoC_traffic() {
                 }
                 dist_msg.data_length = dist_msg.data.size();
                 Packet* p = Packet::allocate(std::move(dist_msg), X_NUM, mem_ni->NI_num);
-                p->send_out_time = cycles;
-                p->in_net_time = cycles;
+                p->send_out_time = context.cycles;
+                p->in_net_time = context.cycles;
                 mem_ni->packetBuffer_list[p->vnet]->enqueue(p);
             }
         }
@@ -599,8 +600,8 @@ void MACnet::inject_cNoC_traffic() {
             comp_msg.destination = mem_id; 
             comp_msg.type = 5; 
             comp_msg.compute_op = o_fn;
-            comp_msg.out_cycle = cycles; 
-            comp_msg.signal_id = packet_id + y;
+            comp_msg.out_cycle = context.cycles;
+            comp_msg.signal_id = context.packet_id_base + y;
             comp_msg.layer_id = c_layer;
 
             comp_msg.n_heads = (o_fn == ATTENTION) ? this->cnnmodel->all_layer_size[c_layer][3] : 1;
@@ -731,8 +732,8 @@ void MACnet::inject_cNoC_traffic() {
             comp_msg.data_length = comp_msg.data.size();
             
             Packet* p = Packet::allocate(std::move(comp_msg), X_NUM, mem_ni->NI_num);
-            p->send_out_time = cycles;
-            p->in_net_time = cycles;
+            p->send_out_time = context.cycles;
+            p->in_net_time = context.cycles;
             mem_ni->packetBuffer_list[p->vnet]->enqueue(p);
         }
         
@@ -743,7 +744,7 @@ void MACnet::inject_cNoC_traffic() {
 void MACnet::start_terminal_gate() {
     terminal_gate_active = true;
     terminal_remaining = o_x * o_y;
-    terminal_dispatch_ready = cycles;
+    terminal_dispatch_ready = context.cycles;
     terminal_outputs.assign(MEM_NODES, 0);
     for (auto& lanes : terminal_lanes)
         for (auto& lane : lanes) lane = TerminalLane{};
@@ -762,13 +763,13 @@ void MACnet::run_terminal_gate() {
         auto& queue = vcNetwork->NI_list[dest_list[mc]]->packet_buffer_out[0];
         for (auto it = queue.begin(); it != queue.end();) {
             Packet* packet = *it;
-            if (packet->message.type != 7 || packet->message.out_cycle > cycles) { ++it; continue; }
+            if (packet->message.type != 7 || packet->message.out_cycle > context.cycles) { ++it; continue; }
             auto& lane = terminal_lanes[mc].at(packet->message.mac_id);
             assert(packet->message.layer_id == c_layer && lane.waiting_for_input);
             assert(packet->message.data.size() == 2 * lane.batch_count);
             lane.inbuffer.assign(packet->message.data.begin(), packet->message.data.end());
             lane.waiting_for_input = false;
-            lane.first_ready = cycles + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
+            lane.first_ready = context.cycles + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
             it = queue.erase(it);
             Packet::release(packet);
         }
@@ -777,7 +778,7 @@ void MACnet::run_terminal_gate() {
         for (size_t index = 0; index < terminal_lanes[mc].size(); ++index) {
             auto& lane = terminal_lanes[mc][index];
             if (lane.batch_count == 0 && !lane.tasks.empty()) {
-                if (cycles < terminal_dispatch_ready ||
+                if (context.cycles < terminal_dispatch_ready ||
                     (mc != 0 && source->packetBuffer_list[0]->packet_num >= NI_TX_FIFO_DEPTH)) continue;
                 lane.batch_count = std::min(lane.tasks.size(),
                     static_cast<size_t>(CNOC_GATE_BATCH_PAIRS));
@@ -791,7 +792,7 @@ void MACnet::run_terminal_gate() {
                 // MC[0] serializes batch reads/repacketization. No next-batch prefetch.
                 const Cycle refill = static_cast<Cycle>(std::ceil((2 * lane.batch_count + 2) * MEM_read_delay)) + CACHE_DELAY;
                 const Cycle copy = (operands.size() * DATA_BYTES + FLIT_LENGTH - 1) / FLIT_LENGTH;
-                terminal_dispatch_ready = cycles + refill + (mc == 0 ? 0 : copy);
+                terminal_dispatch_ready = context.cycles + refill + (mc == 0 ? 0 : copy);
                 if (mc == 0) {
                     lane.inbuffer.assign(operands.begin(), operands.end());
                     lane.first_ready = terminal_dispatch_ready + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
@@ -807,13 +808,13 @@ void MACnet::run_terminal_gate() {
                     message.out_cycle = terminal_dispatch_ready;
                     Packet* packet = Packet::allocate(std::move(message), X_NUM, source->NI_num);
                     packet->send_out_time = packet->message.out_cycle;
-                    packet->in_net_time = cycles;
+                    packet->in_net_time = context.cycles;
                     source->packetBuffer_list[0]->enqueue(packet);
                     lane.waiting_for_input = true;
                 }
             }
             if (lane.waiting_for_input) continue;
-            if (lane.issued < lane.batch_count && cycles >= lane.first_ready) {
+            if (lane.issued < lane.batch_count && context.cycles >= lane.first_ready) {
                 const float gate = lane.inbuffer.front();
                 lane.inbuffer.pop_front();
                 const float up = lane.inbuffer.front();
@@ -824,7 +825,7 @@ void MACnet::run_terminal_gate() {
                 output_table[0][lane.tasks.front()] = value;
                 lane.tasks.pop_front();
                 ++lane.issued;
-                lane.first_ready = cycles + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
+                lane.first_ready = context.cycles + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
                 ++terminal_outputs[mc];
                 --terminal_remaining;
             }
@@ -838,7 +839,7 @@ void MACnet::run_terminal_gate() {
         for (int mc = 0; mc < MEM_NODES; ++mc)
             std::cout << "TERMINAL_GATE layer=" << c_layer << " mc=" << dest_list[mc]
                       << " lanes=" << terminal_lanes[mc].size()
-                      << " outputs=" << terminal_outputs[mc] << " finished=" << cycles << '\n';
+                      << " outputs=" << terminal_outputs[mc] << " finished=" << context.cycles << '\n';
         terminal_gate_active = false;
         cnoc_phase = 0;
         for (auto* pe : MAC_list) { pe->selfstatus = 5; pe->send = 3; }
@@ -981,7 +982,6 @@ void MACnet::checkStatus()
     // Locate the first non-finite layer result without changing simulation state.
     // This is intentionally a diagnostic rather than an assertion: release builds
     // must still report the offending layer before producing the final NaN output.
-    static bool reported_nonfinite = false;
     if (!reported_nonfinite) {
         const auto& layer_result = layer_outputs_history[c_layer];
         for (size_t ch = 0; ch < layer_result.size() && !reported_nonfinite; ++ch) {
@@ -1044,7 +1044,7 @@ void MACnet::checkStatus()
     c_layer++; 
     if(c_layer == n_layer)
     {
-        cout << "All finished! at cycle " << cycles
+        cout << "All finished! at cycle " << context.cycles
              << " | Layer " << finished_layer
              << " flit-hops: " << finished_layer_flit_hops
              << " byte-hops: " << finished_layer_byte_hops
@@ -1054,14 +1054,14 @@ void MACnet::checkStatus()
              << " router-kv=" << finished_layer_wait.router_kv
              << " | kv-evictions: " << finished_layer_evictions << endl;
         output_table = layer_outputs_history[c_layer - 1];
-        Layer_latency.push_back(cycles);
+        Layer_latency.push_back(context.cycles);
         readyflag = 2;
-        packet_id = packet_id + o_ch*o_x*o_y;
+        context.packet_id_base = context.packet_id_base + o_ch*o_x*o_y;
         return;
     }
     else
     {
-        cout << "Layer finished " << finished_layer << " at cycle " << cycles
+        cout << "Layer finished " << finished_layer << " at cycle " << context.cycles
              << " | flit-hops: " << finished_layer_flit_hops
              << " byte-hops: " << finished_layer_byte_hops
              << " | wait-cycles: pe-net=" << finished_layer_wait.pe_network
@@ -1069,8 +1069,8 @@ void MACnet::checkStatus()
              << " router-mfu=" << finished_layer_wait.router_mfu
              << " router-kv=" << finished_layer_wait.router_kv
              << " | kv-evictions: " << finished_layer_evictions << endl;
-        Layer_latency.push_back(cycles);
-        packet_id = packet_id + o_ch*o_x*o_y;
+        Layer_latency.push_back(context.cycles);
+        context.packet_id_base = context.packet_id_base + o_ch*o_x*o_y;
     }
 
     for(int ir=0; ir<TOT_NUM; ir++){
@@ -1132,7 +1132,7 @@ void MACnet::checkStatus()
     readyflag = 0;
     for(int i=0; i<macNum; i++){
         MAC_list[i]->selfstatus = 0;
-        MAC_list[i]->pecycle = cycles;
+        MAC_list[i]->pecycle = context.cycles;
     }   
     return;
 }
@@ -1168,7 +1168,7 @@ void MACnet::runOneStep()
             tmpPacket = *it;
             
 #ifdef cNoC_MODE
-            if (tmpPacket->message.type == 5 && tmpPacket->message.out_cycle <= cycles) {
+            if (tmpPacket->message.type == 5 && tmpPacket->message.out_cycle <= context.cycles) {
                 int y = tmpPacket->message.sequence_id;
                 int p_offset = tmpPacket->message.psum_offset;
                 
@@ -1224,7 +1224,7 @@ void MACnet::runOneStep()
             }
 #endif
 
-            if(tmpPacket->message.type != 0 || tmpPacket->message.out_cycle >= cycles)
+            if(tmpPacket->message.type != 0 || tmpPacket->message.out_cycle >= context.cycles)
             {
                 ++it;
                 continue;
@@ -1235,13 +1235,13 @@ void MACnet::runOneStep()
 
 #ifdef Countlatency
             if(pid*3 < CountNum) {
-                DNN_latency[pid*3][4] = tmpPacket->send_out_time;
-                DNN_latency[pid*3][7] = cycles;
+                context.legacy_packet_trace[pid*3][4] = tmpPacket->send_out_time;
+                context.legacy_packet_trace[pid*3][7] = context.cycles;
             }
             if(pid*3+1 < CountNum) {
-                DNN_latency[pid*3+1][1] = 1;
-                DNN_latency[pid*3+1][2] = src_mac;
-                DNN_latency[pid*3+1][3] = cycles;
+                context.legacy_packet_trace[pid*3+1][1] = 1;
+                context.legacy_packet_trace[pid*3+1][2] = src_mac;
+                context.legacy_packet_trace[pid*3+1][3] = context.cycles;
             }
 #endif
             tmpMAC = MAC_list[src_mac];
@@ -1288,7 +1288,7 @@ void MACnet::runOneStep()
                         }
                     }
 #endif
-                    MAC_list[mem_id]->pecycle = cycles + ceil((in_ch * w_x * w_y * 2 + 1) * MEM_read_delay)  + CACHE_DELAY;
+                    MAC_list[mem_id]->pecycle = context.cycles + ceil((in_ch * w_x * w_y * 2 + 1) * MEM_read_delay)  + CACHE_DELAY;
                     MAC_list[mem_id]->inject(1,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
                 }
             }
@@ -1306,7 +1306,7 @@ void MACnet::runOneStep()
                     for (int p=0; p<w_y; p++) {
                         tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(), this->input_table[tmpMAC->tmpch].begin() + (tmpy*stride+p)*(in_x+2*pad) + tmpx*stride, this->input_table[tmpMAC->tmpch].begin() + (tmpy*stride+p)*(in_x+2*pad) + tmpx*stride + w_x);
                     }
-                    MAC_list[mem_id]->pecycle = cycles + ceil(w_x * w_y * MEM_read_delay) + CACHE_DELAY;
+                    MAC_list[mem_id]->pecycle = context.cycles + ceil(w_x * w_y * MEM_read_delay) + CACHE_DELAY;
                     MAC_list[mem_id]->inject(1,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
                 }
             }
@@ -1343,7 +1343,7 @@ void MACnet::runOneStep()
                         tmpMAC->inbuffer.insert(tmpMAC->inbuffer.end(),this->weight_table[tmpMAC->tmpm].begin(), this->weight_table[tmpMAC->tmpm].end());
                     }
                     
-                    MAC_list[mem_id]->pecycle = cycles + ceil(tmpMAC->inbuffer.size() * MEM_read_delay) + CACHE_DELAY;
+                    MAC_list[mem_id]->pecycle = context.cycles + ceil(tmpMAC->inbuffer.size() * MEM_read_delay) + CACHE_DELAY;
                     MAC_list[mem_id]->inject(1,src,tmpMAC->inbuffer.size(),o_fn,vcNetwork->NI_list[mem_id],pid,src_mac);
                 }
             }
@@ -1511,7 +1511,7 @@ void MACnet::runOneStep()
                     }
 
                     int payload_size = tmpMAC->inbuffer.size();
-                    MAC_list[mem_id]->pecycle = cycles + ceil(payload_size * MEM_read_delay) + CACHE_DELAY;
+                    MAC_list[mem_id]->pecycle = context.cycles + ceil(payload_size * MEM_read_delay) + CACHE_DELAY;
                     MAC_list[mem_id]->inject(1, src, payload_size, o_fn, vcNetwork->NI_list[mem_id], pid, src_mac);
                 }
             }
@@ -1521,7 +1521,7 @@ void MACnet::runOneStep()
 
         for (auto it = tmpNI->packet_buffer_out[1].begin(); it != tmpNI->packet_buffer_out[1].end(); ) {
             tmpPacket = *it;
-            if(tmpPacket->message.type != 2 || tmpPacket->message.out_cycle >= cycles)
+            if(tmpPacket->message.type != 2 || tmpPacket->message.out_cycle >= context.cycles)
             {
                 ++it;
                 continue;
@@ -1533,11 +1533,11 @@ void MACnet::runOneStep()
 
 #ifdef Countlatency
             if(pid*3+2 < CountNum) {
-                DNN_latency[pid*3+2][0] = c_layer;
-                DNN_latency[pid*3+2][1] = 2;
-                DNN_latency[pid*3+2][2] = src_mac;
-                DNN_latency[pid*3+2][4] = tmpPacket->send_out_time;
-                DNN_latency[pid*3+2][7] = cycles;
+                context.legacy_packet_trace[pid*3+2][0] = c_layer;
+                context.legacy_packet_trace[pid*3+2][1] = 2;
+                context.legacy_packet_trace[pid*3+2][2] = src_mac;
+                context.legacy_packet_trace[pid*3+2][4] = tmpPacket->send_out_time;
+                context.legacy_packet_trace[pid*3+2][7] = context.cycles;
             }
 #endif
 
@@ -1624,8 +1624,6 @@ void MACnet::runOneStep()
         }
     }
 
-    static std::vector<bool> is_dest(TOT_NUM, false);
-    static bool init_dest = false;
     if (!init_dest) {
         for (int m = 0; m < MEM_NODES; m++) {
             if (dest_list[m] < TOT_NUM) {
@@ -1654,7 +1652,7 @@ void MACnet::runOneStep()
             }
 #endif
 
-            if(tmpPacket->message.type != 1 || tmpPacket->message.out_cycle >= cycles)
+            if(tmpPacket->message.type != 1 || tmpPacket->message.out_cycle >= context.cycles)
             {
                 ++it;
                 continue;
@@ -1664,8 +1662,8 @@ void MACnet::runOneStep()
 
 #ifdef Countlatency
             if(pid*3 + 1 < CountNum) {
-                DNN_latency[pid*3+1][4] = tmpPacket->send_out_time;
-                DNN_latency[pid*3+1][7] = cycles;
+                context.legacy_packet_trace[pid*3+1][4] = tmpPacket->send_out_time;
+                context.legacy_packet_trace[pid*3+1][7] = context.cycles;
             }
 #endif
             tmpMAC = MAC_list[src_mac];

@@ -6,8 +6,8 @@
 #include "RInPort.hpp"
 
 
-RInPort::RInPort(int t_id, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_depth, NRBase * t_owner, Link * t_in_link)
-   :Port(t_id, t_vn_num, t_vc_per_vn, t_vc_priority_per_vn, t_depth)
+RInPort::RInPort(SimulationContext& sim, int t_id, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_depth, NRBase * t_owner, Link * t_in_link)
+   : Port(sim, t_id, t_vn_num, t_vc_per_vn, t_vc_priority_per_vn, t_depth)
 {
 	for (size_t i = 0; i < buffer_list.size(); i++) {
 		buffer_list[i]->credit_delay = LINK_TIME;
@@ -173,7 +173,7 @@ void RInPort::getSwitch(){
 		if(count_switch == STARVATION_LIMIT)
 		break;
 		int tag = (*iter);
-		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < cycles){
+		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < context.cycles){
 			Flit* flit = buffer_list[tag]->read();
 			flit->vc = out_vc[tag];
 			VCRouter* vcRouter = dynamic_cast<VCRouter*>(router_owner);
@@ -185,10 +185,10 @@ void RInPort::getSwitch(){
 						// cout<< "router switch" << endl;
 				// added
 				flit->trace_node.push_back(vcRouter->id[0]*X_NUM + vcRouter->id[1]);
-				flit->trace_time.push_back(cycles);
+				flit->trace_time.push_back(context.cycles);
 				vcRouter->out_port_list[out_port[tag]]->buffer_list[0]->enqueue(flit);
 				vcRouter->out_port_list[out_port[tag]]->out_link->rInPort->buffer_list[flit->vc]->get_credit();
-				flit->sched_time = cycles;
+				flit->sched_time = context.cycles;
 				count_switch++;
 				if(flit->type == 1 || flit->type == 10 ){
 				state[tag] = 0; 								//idle
@@ -208,7 +208,7 @@ void RInPort::getSwitch(){
 			break;
 		}
 		int tag = (i+rr_priority_record)%(vn_num*vc_priority_per_vn)+vn_num*vc_per_vn;
-		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < cycles){
+		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < context.cycles){
 			Flit* flit = buffer_list[tag]->read();
 			flit->vc = out_vc[tag];
 			VCRouter* vcRouter = dynamic_cast<VCRouter*>(router_owner);
@@ -223,7 +223,7 @@ void RInPort::getSwitch(){
 				//   added oct20
 				// flitOperNuminOneCycle = flitOperNuminOneCycle + 1; //do one enqueue
 				vcRouter->out_port_list[out_port[tag]]->out_link->rInPort->buffer_list[flit->vc]->get_credit();
-				flit->sched_time = cycles;
+				flit->sched_time = context.cycles;
 				if(flit->type == 1 || flit->type == 10 ){
 					state[tag] = 0; 							//idle
 				}
@@ -239,7 +239,7 @@ void RInPort::getSwitch(){
   // for normal packet
 	for(int i=0; i<vn_num*vc_per_vn; i++){ 				//vc round robin; pick up non-empty buffer with state A (3)
 		int tag = (i + rr_record) % (vn_num * vc_per_vn);
-		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < cycles){
+		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < context.cycles){
 			Flit* flit = buffer_list[tag]->read();
 			flit->vc = out_vc[tag];
 			VCRouter* vcRouter = dynamic_cast<VCRouter*>(router_owner);
@@ -263,7 +263,7 @@ void RInPort::getSwitch(){
 				vcRouter->out_port_list[out_port[tag]]->buffer_list[0]->get_credit();
 
 				vcRouter->out_port_list[out_port[tag]]->out_link->rInPort->buffer_list[flit->vc]->get_credit();
-				flit->sched_time = cycles;
+				flit->sched_time = context.cycles;
 				if(flit->type == 1 || flit->type == 10){
 					state[tag] = 0; 						//idle
 				}
@@ -278,7 +278,7 @@ void RInPort::getSwitch(){
 
 	for(; iter<priority_switch.end();iter++){
 		int tag = (*iter);
-		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < cycles){
+		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < context.cycles){
 			Flit* flit = buffer_list[tag]->read();
 			flit->vc = out_vc[tag];
 			VCRouter* vcRouter = dynamic_cast<VCRouter*>(router_owner);
@@ -290,10 +290,10 @@ void RInPort::getSwitch(){
 				//  	    cout<< "router switch" << endl;
 				//   added
 				flit->trace_node.push_back(vcRouter->id[0]*X_NUM + vcRouter->id[1]);
-				flit->trace_time.push_back(cycles);
+				flit->trace_time.push_back(context.cycles);
 				vcRouter->out_port_list[out_port[tag]]->buffer_list[0]->enqueue(flit);
 				vcRouter->out_port_list[out_port[tag]]->out_link->rInPort->buffer_list[flit->vc]->get_credit();
-				flit->sched_time = cycles;
+				flit->sched_time = context.cycles;
 				if(flit->type == 1 || flit->type == 10 ){
 					state[tag] = 0; 								//idle
 					priority_switch.erase(iter);
@@ -307,7 +307,7 @@ void RInPort::getSwitch(){
   // for LCS packet (individual VC)
 	for(int i=vn_num*vc_per_vn;i<vn_num*(vc_per_vn+vc_priority_per_vn); i++){ //vc round robin; pick up non-empty buffer with state A (3)
 		int tag = (i+rr_priority_record)%(vn_num*vc_priority_per_vn)+vn_num*vc_per_vn;
-		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < cycles){
+		if(buffer_list[tag]->cur_flit_num > 0 && state[tag] == 3 && buffer_list[tag]->read()->sched_time < context.cycles){
 			Flit* flit = buffer_list[tag]->read();
 			flit->vc = out_vc[tag];
 			VCRouter* vcRouter = dynamic_cast<VCRouter*>(router_owner);
@@ -316,10 +316,10 @@ void RInPort::getSwitch(){
 				buffer_list[tag]->dequeue();
 				// added
 				flit->trace_node.push_back(vcRouter->id[0]*X_NUM + vcRouter->id[1]);
-				flit->trace_time.push_back(cycles);
+				flit->trace_time.push_back(context.cycles);
 				vcRouter->out_port_list[out_port[tag]]->buffer_list[0]->enqueue(flit);
 				vcRouter->out_port_list[out_port[tag]]->out_link->rInPort->buffer_list[flit->vc]->get_credit();
-				flit->sched_time = cycles;
+				flit->sched_time = context.cycles;
 				if(flit->type == 1 || flit->type == 10 ){
 					state[tag] = 0;  							//idle
 				}

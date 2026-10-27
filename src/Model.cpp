@@ -3,21 +3,24 @@
  * */
 
 #include "Model.hpp"
+#include <utility>
 #include <math.h>
 #include <ctime>
 #include <string>
 #include <sstream>
 #include <iomanip>
 
-Model::Model()
+Model::Model(std::string model_path, std::string weight_path, std::string input_path)
+    : model_file(std::move(model_path)), weight_file(std::move(weight_path)),
+      input_file(std::move(input_path))
 {
 	layernum = 0;
 }
 
 bool Model::load()					// load model
 {
-	cout<<"model file loading (filename: " << GlobalParams::NNmodel_filename << ")..."<< endl;
-	ifstream fin(GlobalParams::NNmodel_filename, ios::in);
+	cout<<"model file loading (filename: " << model_file << ")..."<< endl;
+	ifstream fin(model_file, ios::in);
 	char temp_type[20], temp_actfun[11];
 	int temp;
 	int temp_c_x, temp_c_y, temp_i, temp_z, temp_std, temp_x, temp_y, temp_pad;
@@ -329,7 +332,7 @@ bool Model::load()					// load model
 bool Model::loadin()// load model
 {
 	//***************** Input setting ******************
-	fstream fin_in(GlobalParams::NNinput_filename, ios::in);
+	fstream fin_in(input_file, ios::in);
 	string line;
 	int input_size_ch = 0;
 	int j = 0;
@@ -394,7 +397,7 @@ bool Model::randomin()// load model with random input
 bool Model::loadweight()// load model
 {
 	//***************** Input setting ******************
-	fstream fin_w(GlobalParams::NNweight_filename, ios::in);
+	fstream fin_w(weight_file, ios::in);
 
 	string line;
 	int j = 0;

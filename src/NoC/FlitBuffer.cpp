@@ -8,9 +8,11 @@
 #include "../parameters.hpp"
 #include <iostream>
 
-extern Cycle cycles;
 
-FlitBuffer::FlitBuffer(int t_vc, int t_vnet, int t_id, int t_depth){
+
+FlitBuffer::FlitBuffer(SimulationContext& sim, int t_vc, int t_vnet, int t_id, int t_depth)
+    : context(sim)
+{
   id = t_id;
   vnet = t_vnet;
   vc = t_vc;
@@ -32,7 +34,7 @@ Flit* FlitBuffer::dequeue(){
   cur_flit_num--;
   
   if (credit_delay > 0) {
-    credit_return_queue.push_back(cycles + credit_delay);
+    credit_return_queue.push_back(context.cycles + credit_delay);
   } else {
     used_credit--;
   }
@@ -41,7 +43,7 @@ Flit* FlitBuffer::dequeue(){
 }
 
 void FlitBuffer::update_credits() {
-  while(!credit_return_queue.empty() && credit_return_queue.front() <= cycles) {
+  while(!credit_return_queue.empty() && credit_return_queue.front() <= context.cycles) {
     credit_return_queue.pop_front();
     used_credit--;
   }

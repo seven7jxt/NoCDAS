@@ -7,6 +7,7 @@
 #define MODEL_HPP_
 
 #include <iostream>
+#include <string>
 #include <fstream>
 #include <vector>
 #include <deque>
@@ -61,7 +62,12 @@ class Model
 public:
 	int layernum;
 
-    Model();
+    Model(std::string model_file = DEFAULT_NNMODEL_FILENAME,
+          std::string weight_file = DEFAULT_NNWEIGHT_FILENAME,
+          std::string input_file = DEFAULT_NNINPUT_FILENAME);
+    std::string model_file;
+    std::string weight_file;
+    std::string input_file;
 
 	float generateRandomFloat();
 

@@ -5,6 +5,8 @@
 #ifndef VCROUTER_HPP_
 #define VCROUTER_HPP_
 
+#include "../SimulationContext.hpp"
+
 #include "FlitBuffer.hpp"
 #include "Link.hpp"
 #include "RInPort.hpp"
@@ -20,11 +22,12 @@ class RInPort;
 class ROutPort;
 class VCNetwork;
 
-extern Cycle cycles;
+
 
 class VCRouter: public NRBase
 {
 public:
+  SimulationContext& context;
   // Struct that models the hardware state registers of a VC for cNoC
   struct ComputeVCState {
       int compute_op;

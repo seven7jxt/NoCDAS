@@ -6,6 +6,8 @@
 #ifndef VCNETWORK_HPP_
 #define VCNETWORK_HPP_
 
+#include "../SimulationContext.hpp"
+
 #include "Link.hpp"
 #include "NI.hpp"
 #include "VCRouter.hpp"
@@ -17,8 +19,7 @@
 #include <cstdint>
 #include <map>
 
-extern std::ofstream router_monitor;
-extern Cycle cycles;
+
 
 class VCRouter;
 class NI;
@@ -33,11 +34,12 @@ struct WaitCounters {
 class VCNetwork
 {
 public:
+  SimulationContext& context;
 
   /** @brief VCNetwork
    *
    */
-  VCNetwork (int router_num, int router_num_x, int NI_num_total, int* NI_num, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth);
+  VCNetwork (SimulationContext& sim, int router_num, int router_num_x, int NI_num_total, int* NI_num, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth);
 
   std::vector<VCRouter*> router_list;
   std::vector<NI*> NI_list;

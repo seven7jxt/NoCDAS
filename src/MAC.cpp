@@ -9,7 +9,7 @@ void MAC::recordSramUsage() {
     sram_stats.observe(static_cast<std::uint64_t>(weight.size()) * DATA_BYTES,
                        static_cast<std::uint64_t>(infeature.size()) * DATA_BYTES,
                        static_cast<std::uint64_t>(kv_cache.size()) * DATA_BYTES,
-                       cycles, net->c_layer);
+                       context.cycles, net->c_layer);
     // Attention scores are unquantized intermediates; report separately from data SRAM.
     score_cache_peak_bytes = std::max(score_cache_peak_bytes,
         static_cast<std::uint64_t>(cached_attention_scores.size()) * 4);
@@ -22,6 +22,7 @@ static_assert(PE_ADD_BATCH_PAIRS > 0 && PE_NUM_OP > 0 && ADD_LATENCY > 0,
               "ADD batch size, throughput and latency must be positive");
 
 MAC::MAC (int t_id, MACnet* t_net, int t_NI_id)
+    : context(t_net->context)
 {
     id = t_id;
     net = t_net;
@@ -146,9 +147,9 @@ bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI,
     if (type == 0 && !data_wait_active) {
         data_wait_active = true;
         data_wait_memory_ready = false;
-        data_wait_last_cycle = cycles;
-        data_wait_memory_start = cycles;
-        data_wait_memory_ready_cycle = cycles;
+        data_wait_last_cycle = context.cycles;
+        data_wait_memory_start = context.cycles;
+        data_wait_memory_ready_cycle = context.cycles;
         data_wait_layer = net->c_layer;
     }
 
@@ -159,9 +160,9 @@ bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI,
         MAC* requester = net->MAC_list[mac_src];
         if (requester->data_wait_active) {
             requester->data_wait_memory_ready = true;
-            requester->data_wait_memory_start = cycles;
+            requester->data_wait_memory_start = context.cycles;
             requester->data_wait_memory_ready_cycle =
-                std::max<std::uint64_t>(cycles, this->pecycle);
+                std::max<std::uint64_t>(context.cycles, this->pecycle);
         }
     }
 
@@ -208,10 +209,10 @@ bool MAC::inject (int type, int d_id, int data_length, float t_output, NI* t_NI,
 
 void MAC::accountDataWait()
 {
-    if (!data_wait_active || cycles <= data_wait_last_cycle) return;
+    if (!data_wait_active || context.cycles <= data_wait_last_cycle) return;
 
     const std::uint64_t begin = data_wait_last_cycle;
-    const std::uint64_t end = cycles;
+    const std::uint64_t end = context.cycles;
     std::uint64_t memory_cycles = 0;
     if (data_wait_memory_ready) {
         const std::uint64_t memory_begin = data_wait_memory_start;
@@ -244,7 +245,7 @@ void MAC::runOneStep()
     accountDataWait();
 
     // output stationary (neuron based calculation)
-    if (pecycle < cycles){
+    if (pecycle < context.cycles){
         // initial idle state
         int stats1;
         if(selfstatus == 0)
@@ -252,11 +253,11 @@ void MAC::runOneStep()
             if(routing_table.size()==0)
             {
                 selfstatus = 0;
-                pecycle = cycles;
+                pecycle = context.cycles;
             }
             else
             {
-                pecycle = cycles;
+                pecycle = context.cycles;
                 selfstatus = 1;
             }
         }
@@ -291,22 +292,22 @@ void MAC::runOneStep()
                         !matmul_activation_valid || matmul_activation_row != matmul_requested_row;
                 }
             }
-            inject(0, dest_mem_id, 1, request, net->vcNetwork->NI_list[NI_id], packet_id + request, id);
+            inject(0, dest_mem_id, 1, request, net->vcNetwork->NI_list[NI_id], context.packet_id_base + request, id);
             selfstatus = 2;
-            pecycle = cycles;
+            pecycle = context.cycles;
 #ifdef Countlatency
-            stats1 = (packet_id + tmp_request)*3;
+            stats1 = (context.packet_id_base + tmp_request)*3;
             if(stats1 < CountNum) {
-                DNN_latency[stats1][0] = net->c_layer;
-                DNN_latency[stats1][1] = 0;
-                DNN_latency[stats1][2] = id;
-                DNN_latency[stats1][3] = pecycle;
+                context.legacy_packet_trace[stats1][0] = net->c_layer;
+                context.legacy_packet_trace[stats1][1] = 0;
+                context.legacy_packet_trace[stats1][2] = id;
+                context.legacy_packet_trace[stats1][3] = pecycle;
             }
 #endif
         }
         else if(selfstatus == 2)
         {
-            if(request >= 0) {pecycle = cycles; selfstatus = 2; return;}
+            if(request >= 0) {pecycle = context.cycles; selfstatus = 2; return;}
             assert((inbuffer.size() >= 4) && "Inbuffer not correct after request is set to 0");
 
             // inbuffer: [fn]
@@ -333,7 +334,7 @@ void MAC::runOneStep()
                 this->npoolflag = 0;
                 this->n_tmpch = -1;
                 this->n_tmpm.clear();
-                this->pecycle = cycles + 1; //cycles + 1
+                this->pecycle = context.cycles + 1; //cycles + 1
                 return;
             }
 #endif
@@ -457,7 +458,7 @@ void MAC::runOneStep()
 
             outfeature = 0.0;
             selfstatus = 3;
-            pecycle = cycles;
+            pecycle = context.cycles;
             return;
         }
         else if(selfstatus == 3){
@@ -470,8 +471,8 @@ void MAC::runOneStep()
                      << fn << " in cNoC_MODE! This operation is performed in-transit on the routers." << endl;
                 outfeature = 0.0;
                 selfstatus = 4;
-                pecycle = cycles + 1;
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                pecycle = context.cycles + 1;
+                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 return;
             }
 #endif
@@ -508,13 +509,13 @@ void MAC::runOneStep()
                     if (infeature[j] > outfeature) {outfeature = infeature[j];}
                 }
                 selfstatus = 4;                             // ready for this computation
-                pecycle = cycles + 1;                       // sync cycles
+                pecycle = context.cycles + 1;                       // sync cycles
 
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
 #ifdef Countlatency
-                stats1 = (packet_id + tmp_request)*3 + 2;
+                stats1 = (context.packet_id_base + tmp_request)*3 + 2;
                 if(stats1 < CountNum) {
-                    DNN_latency[stats1][3] = pecycle;
+                    context.legacy_packet_trace[stats1][3] = pecycle;
                 }
 #endif
                 return;
@@ -528,13 +529,13 @@ void MAC::runOneStep()
                 }
                 outfeature = outfeature / m_size;
                 selfstatus = 4;                             // ready for this computation
-                pecycle = cycles + 1;                       // sync cycles
+                pecycle = context.cycles + 1;                       // sync cycles
 
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
 #ifdef Countlatency
-                stats1 = (packet_id + tmp_request)*3 + 2;
+                stats1 = (context.packet_id_base + tmp_request)*3 + 2;
                 if(stats1 < CountNum) {
-                    DNN_latency[stats1][3] = pecycle;
+                    context.legacy_packet_trace[stats1][3] = pecycle;
                 }
 #endif
                 //packet_id++;
@@ -559,12 +560,12 @@ void MAC::runOneStep()
                         const Cycle compute_cycles = fn == ADD
                             ? ((static_cast<Cycle>(index) + PE_NUM_OP) / PE_NUM_OP) * ADD_LATENCY
                             : static_cast<Cycle>(index + 1) * PE_GATE_LATENCY;
-                        pecycle = cycles + compute_cycles * PE_FREQ_RATIO;
+                        pecycle = context.cycles + compute_cycles * PE_FREQ_RATIO;
                         inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id],
-                               packet_id + tmpm, id);
+                               context.packet_id_base + tmpm, id);
 #ifdef Countlatency
-                        const int result_stats = (packet_id + tmpm) * 3 + 2;
-                        if (result_stats < CountNum) DNN_latency[result_stats][3] = pecycle;
+                        const int result_stats = (context.packet_id_base + tmpm) * 3 + 2;
+                        if (result_stats < CountNum) context.legacy_packet_trace[result_stats][3] = pecycle;
 #endif
                     }
                     return;
@@ -822,15 +823,15 @@ void MAC::runOneStep()
                     // NoC injection
                     calctime = calctime * PE_FREQ_RATIO;
                     selfstatus = 4;
-                    pecycle    = cycles + calctime;
+                    pecycle    = context.cycles + calctime;
 
                     this->tmpm = (current_row * q_dim) + target_idx; 
-                    inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                    inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
 
                     #ifdef Countlatency
-                        int stats1 = (packet_id + tmp_request) * 3 + 2;
+                        int stats1 = (context.packet_id_base + tmp_request) * 3 + 2;
                         if (stats1 < CountNum) {
-                            DNN_latency[stats1][3] = pecycle;
+                            context.legacy_packet_trace[stats1][3] = pecycle;
                         }
                     #endif
 
@@ -897,7 +898,7 @@ void MAC::runOneStep()
                 calctime = calctime * PE_FREQ_RATIO;
 
                 selfstatus = 4; // ready for output
-                pecycle = cycles + calctime; // sync cycles
+                pecycle = context.cycles + calctime; // sync cycles
                 matmul_tile_compute_cycles = calctime;
 
                 // Send one result per output task. The tile pays one compute
@@ -915,16 +916,16 @@ void MAC::runOneStep()
                         #endif
                         tmpm = matmul_tile_start_task + tile_idx;
                         inject(2, dest_mem_id, 1, outfeature,
-                               net->vcNetwork->NI_list[NI_id], packet_id + tmpm, id);
+                               net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmpm, id);
                     }
                 } else {
-                    inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                    inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 }
 
 #ifdef Countlatency
-                int stats1 = (packet_id + tmp_request)*3 + 2;
+                int stats1 = (context.packet_id_base + tmp_request)*3 + 2;
                 if(stats1 < CountNum) {
-                    DNN_latency[stats1][3] = pecycle;
+                    context.legacy_packet_trace[stats1][3] = pecycle;
                 }
 #endif
                 return;
@@ -939,7 +940,7 @@ void MAC::runOneStep()
 
             if (current_chunk < total_chunks - 1) {
                 selfstatus = 41;
-                pecycle = cycles + calctime;
+                pecycle = context.cycles + calctime;
                 return;
             }
 
@@ -947,7 +948,7 @@ void MAC::runOneStep()
             if ((fn % 4) == 0) //linear
             {
                 selfstatus = 4; // ready for this computation
-                pecycle = cycles + calctime - PE_FREQ_RATIO; // sync cycles
+                pecycle = context.cycles + calctime - PE_FREQ_RATIO; // sync cycles
             }
             else if ((fn % 4) == 1)
             {
@@ -955,27 +956,27 @@ void MAC::runOneStep()
                 // cout << "from mac " << id << " output " << outfeature << endl;
                 relu(outfeature);
                 selfstatus = 4; // ready for output
-                pecycle = cycles + calctime; // sync cycles
+                pecycle = context.cycles + calctime; // sync cycles
             }
             else if ((fn % 4) == 2)
             {
                 // activation (tanh)
                 tanh(outfeature);
                 selfstatus = 4; // ready for output
-                pecycle = cycles + calctime; // sync cycles
+                pecycle = context.cycles + calctime; // sync cycles
             }
             else if ((fn % 4) == 3)
             {
                 // activation (sigmoid)
                 sigmoid(outfeature);
                 selfstatus = 4; // ready for output
-                pecycle = cycles + calctime; // sync cycles
+                pecycle = context.cycles + calctime; // sync cycles
             }
             else
             {
                 outfeature = 0.0;
                 selfstatus = 0; // back to initial state
-                pecycle = cycles + 2; // sync cycles
+                pecycle = context.cycles + 2; // sync cycles
                 assert((0 < 1) && "Wrong function (fn)");
                 return;
             }
@@ -994,16 +995,16 @@ void MAC::runOneStep()
                     if (row_size > m_size) outfeature += weight[weight_offset + m_size];
                     tmpm = matmul_tile_start_task + tile_idx;
                     inject(2, dest_mem_id, 1, outfeature,
-                           net->vcNetwork->NI_list[NI_id], packet_id + tmpm, id);
+                           net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmpm, id);
                 }
             } else {
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
             }
 #ifdef Countlatency
             //statistics
-            stats1 = (packet_id + tmp_request)*3 + 2;
+            stats1 = (context.packet_id_base + tmp_request)*3 + 2;
             if(stats1 < CountNum) {
-                DNN_latency[stats1][3] = pecycle;
+                context.legacy_packet_trace[stats1][3] = pecycle;
             }
 #endif
             //packet_id++;
@@ -1016,25 +1017,25 @@ void MAC::runOneStep()
                     {
                         this->tmpm = c;
                         this->tmpch = this->n_tmpch;
-                        inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                        inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
 #ifdef Countlatency
-                        if((packet_id + tmp_request)*3+2 < CountNum) {
-                        DNN_latency[(packet_id + tmp_request)*3+2][6] = pecycle;}
+                        if((context.packet_id_base + tmp_request)*3+2 < CountNum) {
+                        context.legacy_packet_trace[(context.packet_id_base + tmp_request)*3+2][6] = pecycle;}
 #endif
                         //packet_id++;
                     }
                 }
             }
             else{ // normal send out
-                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], packet_id + tmp_request, id);
+                inject(2, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
 #ifdef Countlatency
                 //statistics
-                stats1 = (packet_id + tmp_request)*3 + 2;
+                stats1 = (context.packet_id_base + tmp_request)*3 + 2;
                 if(stats1 < CountNum) {
-                    DNN_latency[stats1][0] = net->c_layer;
-                    DNN_latency[stats1][1] = 2;
-                    DNN_latency[stats1][2] = id;
-                    DNN_latency[stats1][3] = pecycle;
+                    context.legacy_packet_trace[stats1][0] = net->c_layer;
+                    context.legacy_packet_trace[stats1][1] = 2;
+                    context.legacy_packet_trace[stats1][2] = id;
+                    context.legacy_packet_trace[stats1][3] = pecycle;
                 }
 #endif
                 //packet_id++;
@@ -1086,11 +1087,11 @@ void MAC::runOneStep()
             this->n_tmpch = -1;
             this->n_tmpm.clear();
 #endif
-                this->pecycle = cycles + 1; //cycles + 1
+                this->pecycle = context.cycles + 1; //cycles + 1
                 return;
             }
             this->send = 1; // change from 1
-            pecycle = cycles;
+            pecycle = context.cycles;
 #endif
 #ifdef only3type
             if (use_elementwise_batch && received_acks < pending_acks) return;
@@ -1118,14 +1119,14 @@ void MAC::runOneStep()
             this->n_tmpch = -1;
             this->n_tmpm.clear();
 #endif
-            this->pecycle = cycles + 1; //cycles + 1
+            this->pecycle = context.cycles + 1; //cycles + 1
             return;
 #endif
         }
         else if (selfstatus == 41) {
             current_chunk++;
             selfstatus = 1;
-            pecycle = cycles;
+            pecycle = context.cycles;
             weight.clear();
             infeature.clear();
             inbuffer.clear();
