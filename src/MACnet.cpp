@@ -4,6 +4,8 @@
  */
 
 #include "MACnet.hpp"
+#include "ComputeTiming.hpp"
+#include "ComputeKernels.hpp"
 #include <algorithm>
 
 static_assert(CNOC_GATE_BATCH_PAIRS > 0, "MC packet batch size must be positive");
@@ -794,7 +796,7 @@ void MACnet::run_terminal_gate() {
             assert(packet->message.data.size() == 2 * lane.batch_count);
             lane.inbuffer.assign(packet->message.data.begin(), packet->message.data.end());
             lane.waiting_for_input = false;
-            lane.first_ready = context.cycles + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
+            lane.first_ready = context.cycles + LegacyComputeTiming::terminalGate();
             received.take();
             packet->mark(PacketEvent::Consumed, context.cycles);
             Packet::release(packet);
@@ -821,7 +823,7 @@ void MACnet::run_terminal_gate() {
                 terminal_dispatch_ready = context.cycles + refill + (mc == 0 ? 0 : copy);
                 if (mc == 0) {
                     lane.inbuffer.assign(operands.begin(), operands.end());
-                    lane.first_ready = terminal_dispatch_ready + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
+                    lane.first_ready = terminal_dispatch_ready + LegacyComputeTiming::terminalGate();
                 } else {
                     Message message{};
                     message.kind = MessageKind::TerminalOperands;
@@ -846,13 +848,11 @@ void MACnet::run_terminal_gate() {
                 lane.inbuffer.pop_front();
                 const float up = lane.inbuffer.front();
                 lane.inbuffer.pop_front();
-                const float value = o_fn == SWIGLU
-                    ? gate * (1.0 / (1.0 + std::exp(-gate))) * up
-                    : 0.5f * gate * (1.0f + std::erf(gate / 1.41421356f)) * up;
+                const float value = ComputeKernels::elementwisePair(o_fn, gate, up);
                 output_table[0][lane.tasks.front()] = value;
                 lane.tasks.pop_front();
                 ++lane.issued;
-                lane.first_ready = context.cycles + static_cast<Cycle>(PE_GATE_LATENCY) * PE_FREQ_RATIO;
+                lane.first_ready = context.cycles + LegacyComputeTiming::terminalGate();
                 ++terminal_outputs[mc];
                 --terminal_remaining;
             }

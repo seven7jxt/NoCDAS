@@ -4,6 +4,8 @@
  */
 
 #include "MAC.hpp"
+#include "ComputeTiming.hpp"
+#include "ComputeKernels.hpp"
 
 void MAC::recordSramUsage() {
     sram_stats.observe(static_cast<std::uint64_t>(weight.size()) * DATA_BYTES,
@@ -491,9 +493,7 @@ void MAC::runOneStep()
             if (fn >=0 && fn <=3) {                         // Conv
                 float temp_sum = psum_accumulator; 
                 
-                for(int i=0; i < ch_size; i++) {
-                    temp_sum += infeature[i] * weight[i];
-                }
+                temp_sum = ComputeKernels::dot(infeature.data(), weight.data(), ch_size, temp_sum);
                 
                 if (current_chunk == total_chunks - 1) {
                     temp_sum += weight.back();
@@ -507,18 +507,14 @@ void MAC::runOneStep()
                 if (use_matmul_tiling && matmul_tile_count > 0) {
                     pending_acks = matmul_tile_count;
                 } else {
-                    for(int j=0; j < m_size; j++) { outfeature += infeature[j] * weight[j]; }
+                    outfeature = ComputeKernels::dot(infeature.data(), weight.data(), m_size, outfeature);
                     outfeature += weight[m_size];
                     pending_acks = 1;
                 }
             }
             else if (fn == 8)                               // max pooling
             {
-                outfeature = infeature[0];
-                for(int j=1; j < m_size; j++)
-                {
-                    if (infeature[j] > outfeature) {outfeature = infeature[j];}
-                }
+                outfeature = ComputeKernels::pool(infeature.data(), m_size, false);
                 selfstatus = 4;                             // ready for this computation
                 pecycle = context.cycles + 1;                       // sync cycles
 
@@ -527,12 +523,7 @@ void MAC::runOneStep()
             }
             else if (fn == 12)                              // average pooling
             {
-                outfeature = infeature[0];
-                for(int j=1; j < m_size; j++)
-                {
-                    outfeature = outfeature + infeature[j];
-                }
-                outfeature = outfeature / m_size;
+                outfeature = ComputeKernels::pool(infeature.data(), m_size, true);
                 selfstatus = 4;                             // ready for this computation
                 pecycle = context.cycles + 1;                       // sync cycles
 
@@ -550,16 +541,11 @@ void MAC::runOneStep()
                     for (size_t index = 0; index < elementwise_tasks.size(); ++index) {
                         const float gate = infeature[2 * index];
                         const float up = infeature[2 * index + 1];
-                        outfeature = fn == ADD ? gate + up : fn == SWIGLU
-                            ? gate * (1.0 / (1.0 + std::exp(-gate))) * up
-                            : 0.5f * gate * (1.0f + std::erf(gate / 1.41421356f)) * up;
+                        outfeature = ComputeKernels::elementwisePair(fn, gate, up);
                         // Reuse consumed input space; output packets model timed egress.
                         infeature[index] = outfeature;
                         tmpm = elementwise_tasks[index];
-                        const Cycle compute_cycles = fn == ADD
-                            ? ((static_cast<Cycle>(index) + PE_NUM_OP) / PE_NUM_OP) * ADD_LATENCY
-                            : static_cast<Cycle>(index + 1) * PE_GATE_LATENCY;
-                        pecycle = context.cycles + compute_cycles * PE_FREQ_RATIO;
+                        pecycle = context.cycles + LegacyComputeTiming::peElementwiseBatch(fn, index);
                         inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id],
                                context.packet_id_base + tmpm, id);
                     }
@@ -569,7 +555,7 @@ void MAC::runOneStep()
                     if (use_matmul_tiling && matmul_tile_count > 0) {
                         pending_acks = matmul_tile_count;
                     } else {
-                        for(int j=0; j < m_size; j++) { outfeature += infeature[j] * weight[j]; }
+                        outfeature = ComputeKernels::dot(infeature.data(), weight.data(), m_size, outfeature);
 
                         #if USE_BIAS
                             outfeature += weight[m_size];
@@ -577,314 +563,21 @@ void MAC::runOneStep()
                         pending_acks = 1;
                     }
                 } 
-                else if (fn == LAYERNORM) {                                                         // LayerNorm
-                    // infeature = [mean, var, x_i, gamma, beta]
-                    float mean  = infeature[0];
-                    float var   = infeature[1];
-                    float x_i   = infeature[2];
-                    float gamma = infeature[3];
-                    float beta  = infeature[4];
-                    outfeature = (x_i - mean) / std::sqrt(var + 1e-5) * gamma + beta;
+                else if (fn != ATTENTION) {
+                    outfeature = computeTransformerElement();
                 }
-                else if (fn == SOFTMAX_TR) {                                                        // Softmax
-                    assert(m_size > 0 && "SOFTMAX_TR: m_size cannot be 0, check inbuffer after request");
-                    assert((int)infeature.size() >= m_size && "SOFTMAX_TR: infeature too short for m_size");
-
-                    int target_idx = tmpm % m_size;
-                    int seq_idx = tmpm / m_size;
-                    if (causal_mask == 1 && target_idx > seq_idx) { 
-                        outfeature = 0.0; // causal masking
-                    } else {
-                        float max_val = -1e9;
-                        int limit = (causal_mask == 1) ? seq_idx : m_size - 1;
-                        for(int j=0; j <= limit; j++) { if (infeature[j] > max_val) max_val = infeature[j]; }
-                        float sum_exp = 0.0;
-                        for(int j=0; j <= limit; j++) { sum_exp += std::exp(infeature[j] - max_val); }
-                        outfeature = std::exp(infeature[target_idx] - max_val) / sum_exp;
-                    }
-                } 
-                else if (fn == ADD) {                                                               // Add (Residual Connection)
-                    outfeature = infeature[0] + infeature[1];
-                } 
-                else if (fn == EMBEDDING) {                                                         // Embedding Lookup
-                    int idx = tmpm % m_size;
-                    outfeature = weight[idx] * std::sqrt(static_cast<float>(m_size));
-                }
-                else if (fn == RMSNORM) {                                                           // RMSNorm
-                    // infeature contains [rms, x_i, gamma]
-                    float rms   = infeature[0];
-                    float x_i   = infeature[1];
-                    float gamma = infeature[2];
-                    outfeature = (x_i / rms) * gamma;
-                }
-                else if (fn == SWIGLU) {                                                            // SwiGLU
-                    float gate = infeature[0];
-                    float up   = infeature[1]; 
-                    
-                    float silu = gate * (1.0 / (1.0 + std::exp(-gate)));
-                    outfeature = silu * up;
-                }
-                else if (fn == GEGLU) {                                                       
-                    float gate = infeature[0];
-                    float up   = infeature[1]; 
-                    float gelu = 0.5f * gate * (1.0f + std::erf(gate / 1.41421356f));
-                    outfeature = gelu * up;
-                }
-                else if (fn == ROPE) {                                                              // RoPE
-                    int pos = inbuffer[2];       
-                    int head_dim = inbuffer[3];  
-                    int idx = tmpm % m_size;
-                    
-                    int d = idx % head_dim; 
-                    int half_dim = head_dim / 2;
-                    int feat_idx = (d < half_dim) ? d : (d - half_dim);
-                    
-                    float freq = 1.0 / std::pow(10000.0, ((float)(feat_idx * 2) / head_dim));
-                    float theta = pos * freq;
-                    float cos_val = std::cos(theta);
-                    float sin_val = std::sin(theta);
-
-                    float val_curr = infeature[0];
-                    float val_pair = infeature[1];
-
-                    if (d < half_dim) {
-                        outfeature = val_curr * cos_val - val_pair * sin_val;
-                    } else {
-                        outfeature = val_curr * cos_val + val_pair * sin_val;
-                    }
-                }
-                else if (fn == ATTENTION)                                                           // Attention (Hardware Fused Attention Layer with RoPE and Score Caching)
-                {
-                    // Header: op, q_dim, k_dim, n_heads, row, target_idx,
-                    //         kv_head_id, kv_start_token, kv_token_count.
-                    // Payload: query head, followed by [K head, V head] per token.
-                    int q_dim = inbuffer[1];
-                    int k_dim = inbuffer[2];
-                    int n_heads = inbuffer[3];
-                    int current_row = inbuffer[4];
-                    int target_idx = inbuffer[5];
-                    int kv_head_id = inbuffer[6];
-                    int kv_start_token = inbuffer[7];
-                    int kv_token_count = inbuffer[8];
-
-                    int head_dim = q_dim / n_heads;
-                    int k_head_dim = head_dim;
-                    int my_head = target_idx / head_dim;
-                    int target_d = target_idx % head_dim;
-                    int kv_size = k_head_dim * 2;
-                    int k_half_dim = k_head_dim / 2;
-                    int half_dim = head_dim / 2;
-                    assert(kv_head_id == my_head * (k_dim / k_head_dim) / n_heads);
-
-                    if (cached_layer_id != net->c_layer) {
-                        cached_score_row = -1;
-                        cached_score_head = -1;
-                    }
-                    if (cached_layer_id != net->c_layer || cached_kv_head_id != kv_head_id) {
-                        kv_cache.clear();
-                        cached_through_token = -1;
-                        cached_layer_id = net->c_layer;
-                        cached_kv_head_id = kv_head_id;
-                    }
-
-                    int expected_cache_size = (current_row + 1) * kv_size;
-                    assert(expected_cache_size <= KV_CACHE_SIZE && "Head-local KV cache overflow");
-                    if (kv_token_count > 0) {
-                        if (kv_start_token == 0) {
-                            kv_cache.clear();
-                            cached_through_token = -1;
-                        }
-                        assert(kv_start_token == cached_through_token + 1);
-                        for (int t = kv_start_token; t < kv_start_token + kv_token_count; t++) {
-                            int t_offset = 9 + head_dim + (t - kv_start_token) * kv_size;
-                            std::vector<float> token_k_rotated(k_head_dim, 0.0);
-                            for (int d = 0; d < k_half_dim; d++) {
-                                float freq = 1.0 / std::pow(10000.0, (float)(2 * d) / k_head_dim);
-                                float theta = t * freq;
-                                float cos_val = std::cos(theta);
-                                float sin_val = std::sin(theta);
-
-                                float k1 = inbuffer[t_offset + d];
-                                float k2 = inbuffer[t_offset + d + k_half_dim];
-                                token_k_rotated[d] = k1 * cos_val - k2 * sin_val;
-                                token_k_rotated[d + k_half_dim] = k2 * cos_val + k1 * sin_val;
-                            }
-                            kv_cache.insert(kv_cache.end(), token_k_rotated.begin(), token_k_rotated.end());
-                            kv_cache.insert(kv_cache.end(), inbuffer.begin() + t_offset + k_head_dim,
-                                            inbuffer.begin() + t_offset + kv_size);
-                        }
-                        cached_through_token = kv_start_token + kv_token_count - 1;
-                    }
-                    recordSramUsage();
-                    assert(kv_cache.size() == expected_cache_size && "Head-local KV cache size mismatch");
-
-                    // calculating score (O(N)) or cache recovery (O(1)) ---
-                    int SINK_TOKENS = 4; // Deve coincidere con il numero di Sinks del router
-                    std::vector<int> valid_tokens;
-
-                    for (int t = 0; t <= current_row; t++) {
-                        if (current_row >= MAX_CONTEXT_WINDOW) {
-                            int max_recent_tokens = MAX_CONTEXT_WINDOW - SINK_TOKENS;
-                            // Salta i token intermedi (simula l'eviction del Ring Buffer nel router)
-                            if (t >= SINK_TOKENS && t < current_row - max_recent_tokens + 1) {
-                                continue; 
-                            }
-                        }
-                        valid_tokens.push_back(t);
-                    }
-                    int effective_history = valid_tokens.size();
-                    int calctime = 0;
-
-                    // Checking the local cache (based on the window, not the entire history)
-                    bool scores_hit = (this->cached_score_row == current_row && this->cached_score_head == my_head);
-                    std::vector<float> final_scores(effective_history, 0.0);
-
-                    if (!scores_hit || this->cached_attention_scores.size() != effective_history) {                        
-                        // RoPE for the Query
-                        std::vector<float> q_rotated(head_dim, 0.0);
-
-                        for (int d = 0; d < half_dim; d++) {
-                            float freq = 1.0 / std::pow(10000.0, (float)(2 * d) / head_dim);
-                            float theta = current_row * freq;
-                            float cos_val = std::cos(theta);
-                            float sin_val = std::sin(theta);
-
-                            float q1 = infeature[d];
-                            float q2 = infeature[d + half_dim];
-
-                            q_rotated[d]            = q1 * cos_val - q2 * sin_val;
-                            q_rotated[d + half_dim] = q2 * cos_val + q1 * sin_val;
-                        }
-
-                        // Dot Product (Q * K^T) for the current window
-                        float max_score = -1e9;
-
-                        for (int i = 0; i < effective_history; i++) { 
-                            int t = valid_tokens[i];
-                            
-                            float dot_product = 0.0;
-                            int k_start = t * kv_size;
-                            
-                            for (int d = 0; d < k_head_dim; d++) {
-                                dot_product += q_rotated[d] * this->kv_cache[k_start + d];
-                            }
-                            
-                            final_scores[i] = dot_product / std::sqrt((float)head_dim);
-                            
-                            if (final_scores[i] > max_score) { 
-                                max_score = final_scores[i]; 
-                            }
-                        }
-                        
-                        // Softmax
-                        float sum_exp = 0.0;
-                        for (int i = 0; i < effective_history; i++) {
-                            final_scores[i] = std::exp(final_scores[i] - max_score);
-                            sum_exp += final_scores[i];
-                        }
-                        for (int i = 0; i < effective_history; i++) {
-                            final_scores[i] /= sum_exp;
-                        }
-
-                        // cache score update
-                        this->cached_attention_scores = final_scores;
-                        recordSramUsage();
-                        this->cached_score_row = current_row;
-                        this->cached_score_head = my_head;
-
-                        // hardware timing
-                        int dot_product_ops = (effective_history * k_head_dim) / PE_NUM_OP + 1;
-                        int softmax_ops     = (3 * effective_history)          / PE_NUM_OP + 1;
-                        int value_ops       = effective_history                / PE_NUM_OP + 1;
-                        calctime = (dot_product_ops + softmax_ops + value_ops) * MAC_LATENCY + (effective_history * EXP_LATENCY) + DIV_LATENCY + CORDIC_LATENCY;
-
-                    } else {
-                        // cache hit, reuse the cache scores
-                        final_scores = this->cached_attention_scores;
-                        
-                        // hardware timing
-                        int value_ops = effective_history / PE_NUM_OP + 1;
-                        calctime = value_ops * MAC_LATENCY;
-                    }
-
-                    // value projection
-                    outfeature = 0.0; 
-                    for (int i = 0; i < effective_history; i++) {
-                        int t = valid_tokens[i];
-                        int v_start = (t * kv_size) + k_head_dim;
-                        outfeature += final_scores[i] * this->kv_cache[v_start + target_d];
-                    }
-                    
-                    // NoC injection
-                    calctime = calctime * PE_FREQ_RATIO;
+                else { // ATTENTION: cache updates and arithmetic precede timed result delivery.
+                    const auto work = computeAttentionElement();
                     selfstatus = 4;
-                    pecycle    = context.cycles + calctime;
-
-                    this->tmpm = (current_row * q_dim) + target_idx; 
+                    pecycle = context.cycles + LegacyComputeTiming::peAttention(work);
                     inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
 
 
                     return;
                 }
 
-                int calctime = 0;
-
-                // dynamic calculation of the pipeline depth of the node
-                // based on the global variable PE_NUM_OP 
-                int SYSTOLIC_DIM = std::ceil(std::sqrt(PE_NUM_OP)); 
-
-                if (fn == MATMUL) { 
-                    // MatMul: overhead -> systolic array initialization + active cycles
-                    int operation_count = m_size;
-                    if (use_matmul_tiling && matmul_tile_count > 0) {
-                        operation_count *= matmul_tile_count;
-                    }
-                    int active_cycles = (operation_count / PE_NUM_OP) + 1;
-                    calctime = (SYSTOLIC_DIM + active_cycles) * MAC_LATENCY;
-                } 
-                else if (fn == LAYERNORM) { 
-                    // LayerNorm (Mean, Variance, Norm)
-                    int vector_ops = (5 * m_size) / PE_NUM_OP + 1;
-                    calctime = vector_ops * MAC_LATENCY + SQRT_LATENCY + DIV_LATENCY;
-                } 
-                else if (fn == SOFTMAX_TR) { 
-                    // Softmax (Max, Sub, Exp, Sum, Div)
-                    int vector_ops = (3 * m_size) / PE_NUM_OP + 1;
-                    calctime = vector_ops * MAC_LATENCY + EXP_LATENCY + DIV_LATENCY;
-                } 
-                else if (fn == ADD) { 
-                    // Add (Residual Connection)
-                    calctime = ADD_LATENCY;
-                } 
-                else if (fn == EMBEDDING) { 
-                    // Embedding: direct lookup, no arithmetic cost
-                    calctime = 1; 
-                }
-                else if (fn == RMSNORM) { 
-                    // RMSNorm (Square, Sum, Multiply)
-                    int vector_ops = (3 * m_size) / PE_NUM_OP + 1;
-                    calctime = vector_ops * MAC_LATENCY + SQRT_LATENCY + DIV_LATENCY;
-                }
-                else if (fn == SWIGLU || fn == GEGLU) { 
-                    // Each task consumes one gate/up pair, not the m_size vector.
-                    // Retain the existing fixed EXP/DIV approximation for both gates.
-                    const int element_ops = 4;
-                    const int element_cycles = (element_ops + PE_NUM_OP - 1) / PE_NUM_OP;
-                    calctime = element_cycles * MAC_LATENCY + EXP_LATENCY + DIV_LATENCY;
-                }
-                else if (fn == ROPE) { 
-                    // RoPE: the MAC is computing a single element (idx), not the entire m_size vector.
-                    // We charge only the time to compute this specific element.
-                    // 2 MACs (rotation) + CORDIC
-                    int element_ops = 2; 
-                    calctime = (element_ops * MAC_LATENCY) + CORDIC_LATENCY;
-                }
-                else if (fn == ATTENTION) { 
-                    // Latency already computed in the block above
-                }
-
-                // Multiply by the PE frequency ratio
-                calctime = calctime * PE_FREQ_RATIO;
+                const Cycle calctime = LegacyComputeTiming::peTransformer(
+                    fn, m_size, use_matmul_tiling && matmul_tile_count > 0 ? matmul_tile_count : 1);
 
                 selfstatus = 4; // ready for output
                 pecycle = context.cycles + calctime; // sync cycles
@@ -895,11 +588,8 @@ void MAC::runOneStep()
                 if (use_matmul_tiling && fn == MATMUL && matmul_tile_count > 0) {
                     const int row_size = matmul_tile_weight_size;
                     for (int tile_idx = 0; tile_idx < matmul_tile_count; tile_idx++) {
-                        outfeature = 0.0f;
                         const int weight_offset = tile_idx * row_size;
-                        for (int j = 0; j < m_size; j++) {
-                            outfeature += infeature[j] * weight[weight_offset + j];
-                        }
+                        outfeature = ComputeKernels::dot(infeature.data(), weight.data() + weight_offset, m_size);
                         #if USE_BIAS
                             if (row_size > m_size) outfeature += weight[weight_offset + m_size];
                         #endif
@@ -918,8 +608,8 @@ void MAC::runOneStep()
             if (use_matmul_tiling && (fn >= 4 && fn <= 7) && matmul_tile_count > 0) {
                 operation_count *= matmul_tile_count;
             }
-            int calctime = (operation_count / PE_NUM_OP + 1) * PE_FREQ_RATIO;  //25, 10
-            //int calctime = 25;
+            const Cycle calctime = LegacyComputeTiming::peConvOrDense(
+                operation_count, fn % 4 == 0 && current_chunk == total_chunks - 1);
 
             if (current_chunk < total_chunks - 1) {
                 selfstatus = 41;
@@ -931,7 +621,7 @@ void MAC::runOneStep()
             if ((fn % 4) == 0) //linear
             {
                 selfstatus = 4; // ready for this computation
-                pecycle = context.cycles + calctime - PE_FREQ_RATIO; // sync cycles
+                pecycle = context.cycles + calctime; // sync cycles
             }
             else if ((fn % 4) == 1)
             {
@@ -969,11 +659,8 @@ void MAC::runOneStep()
             if (use_matmul_tiling && (fn >= 4 && fn <= 7) && matmul_tile_count > 0) {
                 const int row_size = matmul_tile_weight_size;
                 for (int tile_idx = 0; tile_idx < matmul_tile_count; tile_idx++) {
-                    outfeature = 0.0f;
                     const int weight_offset = tile_idx * row_size;
-                    for (int j = 0; j < m_size; j++) {
-                        outfeature += infeature[j] * weight[weight_offset + j];
-                    }
+                    outfeature = ComputeKernels::dot(infeature.data(), weight.data() + weight_offset, m_size);
                     // Dense layers in the legacy model always carry a bias.
                     if (row_size > m_size) outfeature += weight[weight_offset + m_size];
                     tmpm = matmul_tile_start_task + tile_idx;
@@ -1096,22 +783,6 @@ void MAC::runOneStep()
         }
     }
 }
-
-void MAC::sigmoid(float& x) // 3
-{
-    x = 1.0 / (1.0 + std::exp(-x));
-}
-
-void MAC::tanh(float& x)  // 2
-{
-    x = 2.0 / (1.0 + std::exp(-2 * x)) - 1;
-}
-
-void MAC::relu(float& x)  // 1
-{
-    if (x < 0) x = 0.0;
-}
-
 
 // Destructor
 MAC::~MAC (){

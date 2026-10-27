@@ -14,6 +14,7 @@
 #include "VCNetwork.hpp"
 #include "NRBase.hpp"
 #include "Model.hpp"
+#include "../ComputeTiming.hpp"
 #include "../SramStats.hpp"
 #include <vector>
 #include <map>
@@ -96,8 +97,8 @@ public:
   int computeInTransit(Flit* t_flit, int port_idx);
   std::vector<int> getAttentionPhysicalSlots(Flit* t_flit, int router_idx,
                                              int path_length, int k_dim) const;
-  // Packet-level attention completes on the tail; returns its MFU service cycles.
-  int computeAttention(Flit* t_flit);
+  // Normalize at the last reduction router and describe the tail work for timing.
+  RouterAttentionWork finishAttention(Flit* t_flit);
   void processDistributionPacket(Flit* t_flit);
 
   int attention_head_dim = 0;

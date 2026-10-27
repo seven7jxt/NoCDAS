@@ -8,6 +8,7 @@
 #define MAC_HPP_
 
 #include "SimulationContext.hpp"
+#include "ComputeTiming.hpp"
 
 #include <vector>
 #include <stdio.h>
@@ -169,6 +170,8 @@ class MAC
 
 	~MAC ();
 private:
+    float computeTransformerElement();
+    PEAttentionWork computeAttentionElement();
     std::deque<Packet*> pending_tx;
 };
 
