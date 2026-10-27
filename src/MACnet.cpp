@@ -769,6 +769,12 @@ void MACnet::inject_cNoC_traffic() {
     }
 }
 
+void MACnet::TerminalLane::issue(Cycle now, Cycle operands_ready) {
+    [[maybe_unused]] const bool accepted = compute_unit.tryIssue(
+        {LegacyComputeTiming::terminalGate(), operands_ready}, now);
+    assert(accepted);
+}
+
 void MACnet::start_terminal_gate() {
     terminal_gate_active = true;
     terminal_remaining = o_x * o_y;
@@ -796,7 +802,7 @@ void MACnet::run_terminal_gate() {
             assert(packet->message.data.size() == 2 * lane.batch_count);
             lane.inbuffer.assign(packet->message.data.begin(), packet->message.data.end());
             lane.waiting_for_input = false;
-            lane.first_ready = context.cycles + LegacyComputeTiming::terminalGate();
+            lane.issue(context.cycles, context.cycles);
             received.take();
             packet->mark(PacketEvent::Consumed, context.cycles);
             Packet::release(packet);
@@ -823,7 +829,7 @@ void MACnet::run_terminal_gate() {
                 terminal_dispatch_ready = context.cycles + refill + (mc == 0 ? 0 : copy);
                 if (mc == 0) {
                     lane.inbuffer.assign(operands.begin(), operands.end());
-                    lane.first_ready = terminal_dispatch_ready + LegacyComputeTiming::terminalGate();
+                    lane.issue(context.cycles, terminal_dispatch_ready);
                 } else {
                     Message message{};
                     message.kind = MessageKind::TerminalOperands;
@@ -843,7 +849,8 @@ void MACnet::run_terminal_gate() {
                 }
             }
             if (lane.waiting_for_input) continue;
-            if (lane.issued < lane.batch_count && context.cycles >= lane.first_ready) {
+            ComputeCompletion completion;
+            if (lane.compute_unit.tryComplete(context.cycles, completion)) {
                 const float gate = lane.inbuffer.front();
                 lane.inbuffer.pop_front();
                 const float up = lane.inbuffer.front();
@@ -852,7 +859,7 @@ void MACnet::run_terminal_gate() {
                 output_table[0][lane.tasks.front()] = value;
                 lane.tasks.pop_front();
                 ++lane.issued;
-                lane.first_ready = context.cycles + LegacyComputeTiming::terminalGate();
+                if (lane.issued < lane.batch_count) lane.issue(context.cycles, context.cycles);
                 ++terminal_outputs[mc];
                 --terminal_remaining;
             }

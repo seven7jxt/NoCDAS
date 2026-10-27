@@ -253,8 +253,19 @@ void MAC::finishDataWait()
 }
 
 
+void MAC::scheduleCompute(Cycle duration)
+{
+    [[maybe_unused]] const bool accepted = compute_unit.tryIssue({duration}, context.cycles);
+    assert(accepted);
+    pecycle = compute_unit.scheduled().ready_at;
+}
+
 void MAC::runOneStep()
 {
+    // Completion is available at ready_at. The existing strict pecycle < now
+    // gate still controls PE transitions; pecycle also carries non-compute waits.
+    ComputeCompletion completion;
+    compute_unit.tryComplete(context.cycles, completion);
     // Sample before scheduler gating so a PE waiting for a response is still
     // charged while its local pecycle is in the future.
     accountDataWait();
@@ -475,7 +486,7 @@ void MAC::runOneStep()
             return;
         }
         else if(selfstatus == 3){
-            
+            if (compute_unit.busy()) return;
 #ifdef cNoC_MODE
             // In cNoC mode, the MAC units act like co-processors for global reductions.
             // They should not execute MatMul, Add, or SwiGLU operations, as those are performed in-transit on the routers.
@@ -484,7 +495,7 @@ void MAC::runOneStep()
                      << fn << " in cNoC_MODE! This operation is performed in-transit on the routers." << endl;
                 outfeature = 0.0;
                 selfstatus = 4;
-                pecycle = context.cycles + 1;
+                scheduleCompute(1);
                 inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 return;
             }
@@ -516,7 +527,7 @@ void MAC::runOneStep()
             {
                 outfeature = ComputeKernels::pool(infeature.data(), m_size, false);
                 selfstatus = 4;                             // ready for this computation
-                pecycle = context.cycles + 1;                       // sync cycles
+                scheduleCompute(1);
 
                 inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 return;
@@ -525,7 +536,7 @@ void MAC::runOneStep()
             {
                 outfeature = ComputeKernels::pool(infeature.data(), m_size, true);
                 selfstatus = 4;                             // ready for this computation
-                pecycle = context.cycles + 1;                       // sync cycles
+                scheduleCompute(1);
 
                 inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
                 //packet_id++;
@@ -538,6 +549,9 @@ void MAC::runOneStep()
                     received_acks = 0;
                     selfstatus = 4;
                     send = 1; // Earlier scalar results may return before the batch finishes.
+                    // Reserve the whole batch; individual results retain their
+                    // original offsets within it, including equal-ready ADDs.
+                    scheduleCompute(LegacyComputeTiming::peElementwiseBatch(fn, elementwise_tasks.size() - 1));
                     for (size_t index = 0; index < elementwise_tasks.size(); ++index) {
                         const float gate = infeature[2 * index];
                         const float up = infeature[2 * index + 1];
@@ -545,7 +559,7 @@ void MAC::runOneStep()
                         // Reuse consumed input space; output packets model timed egress.
                         infeature[index] = outfeature;
                         tmpm = elementwise_tasks[index];
-                        pecycle = context.cycles + LegacyComputeTiming::peElementwiseBatch(fn, index);
+                        pecycle = compute_unit.scheduled().started_at + LegacyComputeTiming::peElementwiseBatch(fn, index);
                         inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id],
                                context.packet_id_base + tmpm, id);
                     }
@@ -569,7 +583,7 @@ void MAC::runOneStep()
                 else { // ATTENTION: cache updates and arithmetic precede timed result delivery.
                     const auto work = computeAttentionElement();
                     selfstatus = 4;
-                    pecycle = context.cycles + LegacyComputeTiming::peAttention(work);
+                    scheduleCompute(LegacyComputeTiming::peAttention(work));
                     inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
 
 
@@ -580,7 +594,7 @@ void MAC::runOneStep()
                     fn, m_size, use_matmul_tiling && matmul_tile_count > 0 ? matmul_tile_count : 1);
 
                 selfstatus = 4; // ready for output
-                pecycle = context.cycles + calctime; // sync cycles
+                scheduleCompute(calctime);
                 matmul_tile_compute_cycles = calctime;
 
                 // Send one result per output task. The tile pays one compute
@@ -610,10 +624,10 @@ void MAC::runOneStep()
             }
             const Cycle calctime = LegacyComputeTiming::peConvOrDense(
                 operation_count, fn % 4 == 0 && current_chunk == total_chunks - 1);
+            scheduleCompute(calctime);
 
             if (current_chunk < total_chunks - 1) {
                 selfstatus = 41;
-                pecycle = context.cycles + calctime;
                 return;
             }
 
@@ -621,7 +635,6 @@ void MAC::runOneStep()
             if ((fn % 4) == 0) //linear
             {
                 selfstatus = 4; // ready for this computation
-                pecycle = context.cycles + calctime; // sync cycles
             }
             else if ((fn % 4) == 1)
             {
@@ -629,21 +642,18 @@ void MAC::runOneStep()
                 // cout << "from mac " << id << " output " << outfeature << endl;
                 relu(outfeature);
                 selfstatus = 4; // ready for output
-                pecycle = context.cycles + calctime; // sync cycles
             }
             else if ((fn % 4) == 2)
             {
                 // activation (tanh)
                 tanh(outfeature);
                 selfstatus = 4; // ready for output
-                pecycle = context.cycles + calctime; // sync cycles
             }
             else if ((fn % 4) == 3)
             {
                 // activation (sigmoid)
                 sigmoid(outfeature);
                 selfstatus = 4; // ready for output
-                pecycle = context.cycles + calctime; // sync cycles
             }
             else
             {

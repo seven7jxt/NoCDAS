@@ -15,6 +15,7 @@
 #include "NRBase.hpp"
 #include "Model.hpp"
 #include "../ComputeTiming.hpp"
+#include "../ComputeUnit.hpp"
 #include "../SramStats.hpp"
 #include <vector>
 #include <map>
@@ -82,7 +83,6 @@ public:
   void writeKV(int index, float kv_value);
   void storeWeight(float weight_value);
 
-  Cycle mfu_occupied_until;
   // True only while the MFU hold was caused by an attention packet waiting
   // for its local KV token, so retry cycles are not reported as MFU compute
   // contention as well.
@@ -123,6 +123,9 @@ public:
   void clearWeights();
 
   ~VCRouter ();
+private:
+  SerialComputeUnit mfu;
+  Cycle reserveMFU(Cycle duration);
 };
 
 #endif /* VCROUTER_HPP_ */

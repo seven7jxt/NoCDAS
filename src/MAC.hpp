@@ -9,6 +9,7 @@
 
 #include "SimulationContext.hpp"
 #include "ComputeTiming.hpp"
+#include "ComputeUnit.hpp"
 
 #include <vector>
 #include <stdio.h>
@@ -170,6 +171,8 @@ class MAC
 
 	~MAC ();
 private:
+    SerialComputeUnit compute_unit;
+    void scheduleCompute(Cycle duration);
     float computeTransformerElement();
     PEAttentionWork computeAttentionElement();
     std::deque<Packet*> pending_tx;

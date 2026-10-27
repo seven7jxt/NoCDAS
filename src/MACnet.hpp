@@ -7,6 +7,7 @@
 #define MACNET_HPP_
 
 #include "SimulationContext.hpp"
+#include "ComputeUnit.hpp"
 
 #include <cmath>
 #include <map>
@@ -137,8 +138,9 @@ public:
         std::deque<float> inbuffer;
         size_t issued = 0;
         size_t batch_count = 0;
-        Cycle first_ready = 0;
+        SerialComputeUnit compute_unit;
         bool waiting_for_input = false;
+        void issue(Cycle now, Cycle operands_ready);
     };
     std::vector<std::vector<TerminalLane>> terminal_lanes;
     std::vector<std::uint64_t> terminal_outputs;

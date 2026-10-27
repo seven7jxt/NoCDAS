@@ -29,7 +29,6 @@ VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t
     local_weights.clear();
     local_kv_cache.clear();
 
-    mfu_occupied_until = 0;
     mfu_waiting_for_kv = false;
     kv_retry_until = 0;
 
@@ -233,6 +232,12 @@ void VCRouter::getSwitch(){
   rr_port = (rr_port+1)%port_num;
 }
 
+Cycle VCRouter::reserveMFU(Cycle duration) {
+    [[maybe_unused]] const bool accepted = mfu.tryIssue({duration}, context.cycles);
+    assert(accepted);
+    return mfu.scheduled().ready_at;
+}
+
 void VCRouter::outPortDequeue(){
     // This is a per-attempt diagnostic.  The retry interval itself is kept in
     // kv_retry_until so a blocked port can still be classified correctly.
@@ -244,7 +249,11 @@ void VCRouter::outPortDequeue(){
             Flit* flit = out_port_list[i]->buffer_list[0]->read();
 
             if (flit->packet->message.kind == MessageKind::Distribution || flit->packet->message.kind == MessageKind::Compute) {
-                if (context.cycles < mfu_occupied_until) {
+                // Retire before each candidate, preserving same-cycle reuse
+                // for a zero-duration reservation as well as normal completion.
+                ComputeCompletion completion;
+                mfu.tryComplete(context.cycles, completion);
+                if (mfu.busy()) {
                     // A KV retry occupies the router-wide MFU, but other
                     // eligible flits blocked by that same hold are waiting
                     // for the MFU, not for their own KV data.
@@ -281,8 +290,8 @@ void VCRouter::outPortDequeue(){
                     if (kv_token_count < expected_local_tokens) {
                         vcNetwork->recordRouterWait(id[0] * X_NUM + id[1], flit->packet->message.layer_id, true);
                         mfu_waiting_for_kv = true;
-                        kv_retry_until = context.cycles + 2;
-                        mfu_occupied_until = context.cycles + 2;
+                        // A retry holds the same resource without executing a kernel.
+                        kv_retry_until = reserveMFU(2);
                         continue;
                     }
                 }
@@ -312,7 +321,6 @@ void VCRouter::outPortDequeue(){
                 }
                 
                 compute_delay = std::max(1, compute_delay);
-                mfu_occupied_until = context.cycles + compute_delay;
             }
             else if (flit->packet->message.kind == MessageKind::Compute) {
                 const int matmul_macs = computeInTransit(flit, i);
@@ -326,9 +334,12 @@ void VCRouter::outPortDequeue(){
                 } else {
                     compute_delay = LegacyComputeTiming::routerOperator(opcode, matmul_macs);
                 }
-
-                mfu_occupied_until = context.cycles + compute_delay;
             }
+
+            const Cycle ready =
+                flit->packet->message.kind == MessageKind::Distribution ||
+                flit->packet->message.kind == MessageKind::Compute
+                ? reserveMFU(compute_delay) : context.cycles;
 
             out_port_list[i]->out_link->rInPort->buffer_list[flit->vc]->enqueue(flit);
 
@@ -338,7 +349,7 @@ void VCRouter::outPortDequeue(){
                 vcNetwork->recordFlitHop(flit->packet->message.layer_id);
             }
             
-            flit->sched_time = context.cycles + compute_delay + LINK_TIME - 1;
+            flit->sched_time = ready + LINK_TIME - 1;
 
             flit->trace_node.push_back(out_port_list[i]->out_link->rInPort->rid[0]*X_NUM + out_port_list[i]->out_link->rInPort->rid[1]);
             flit->trace_time.push_back(context.cycles + LINK_TIME - 1);
@@ -370,7 +381,7 @@ void VCRouter::runOneStep(){
     vcRequest();
     getSwitch();
     outPortDequeue();
-    vcNetwork->sampleRouterOccupancy(id[0] * X_NUM + id[1], mfu_occupied_until, kv_retry_until);
+    vcNetwork->sampleRouterOccupancy(id[0] * X_NUM + id[1], mfu.scheduled().ready_at, kv_retry_until);
 }
 
 bool VCRouter::allocateSRAM(int num_floats) {
