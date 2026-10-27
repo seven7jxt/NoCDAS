@@ -20,6 +20,7 @@ NI::NI (int t_id, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_v
   NI_num = t_NI_num;
   // output;
   packetBuffer_list.reserve(vn_num);
+  tx_peak.resize(vn_num, 0);
   for(int i=0; i<vn_num; i++){
       PacketBuffer* t_packetBuffer = new PacketBuffer(this, i);
       packetBuffer_list.push_back(t_packetBuffer);
@@ -27,14 +28,14 @@ NI::NI (int t_id, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_v
   buffer_list.reserve(vn_num*(vc_per_vn+vc_priority_per_vn));
 
   for(int i=0; i<vn_num*vc_per_vn; i++){
-      FlitBuffer * t_flitBuffer = new FlitBuffer(context, i%vc_per_vn, i/vc_per_vn, i, INFINITE1);
+      FlitBuffer * t_flitBuffer = new FlitBuffer(context, i%vc_per_vn, i/vc_per_vn, i, NI_TX_VC_DEPTH_FLITS);
       buffer_list.push_back(t_flitBuffer);
       out_vc.push_back(-1);
       state.push_back(0);
   }
 
   for(int i=0; i<vn_num*vc_priority_per_vn; i++){
-      FlitBuffer * t_flitBuffer = new FlitBuffer(context, i%vc_priority_per_vn+vc_per_vn, i/vc_priority_per_vn, i, INFINITE1);
+      FlitBuffer * t_flitBuffer = new FlitBuffer(context, i%vc_priority_per_vn+vc_per_vn, i/vc_priority_per_vn, i, NI_TX_VC_DEPTH_FLITS);
       buffer_list.push_back(t_flitBuffer);
       out_vc.push_back(-1);
       state.push_back(0);
@@ -44,12 +45,12 @@ NI::NI (int t_id, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_v
   in_depth = t_in_depth;
 
   // output;
-  ROutPort * vc_rOutPort = new ROutPort(context, 0, 1, 1, 0, INFINITE);
+  ROutPort * vc_rOutPort = new ROutPort(context, 0, 1, 1, 0, NI_TX_PORT_DEPTH_FLITS);
   out_port = vc_rOutPort;
 
   // input;
   Link * link = new Link((RInPort*)NULL);
-  RInPort * vcInPort = new RInPort(context, 0, vn_num, vc_per_vn, vc_priority_per_vn, INFINITE, this, link);
+  RInPort * vcInPort = new RInPort(context, 0, vn_num, vc_per_vn, vc_priority_per_vn, NI_RX_VC_DEPTH_FLITS, this, link);
   vcInPort->rid[0] = t_id/X_NUM;
   vcInPort->rid[1] = t_id%X_NUM;
   link->rInPort = vcInPort;
@@ -384,9 +385,15 @@ bool NI::trySend(Packet* packet) {
         throw std::invalid_argument("Invalid NI transmit packet");
     if (packet->in_pool || packet->release_requested || packet->submitted)
         throw std::logic_error("NI requires an active packet that has not been submitted");
+    if (NI_TX_PACKET_CAPACITY > 0 &&
+        txQueued(packet->virtualNetwork()) >= NI_TX_PACKET_CAPACITY) {
+        ++tx_rejected_attempts;
+        return false;
+    }
     packet->submitted = true;
     packet->mark(PacketEvent::Enqueued, context.cycles);
     packetBuffer_list[packet->vnet]->enqueue(packet);
+    tx_peak[packet->vnet] = std::max(tx_peak[packet->vnet], txQueued(packet->virtualNetwork()));
     return true;
 }
 size_t NI::txQueued(VirtualNetwork network) const {

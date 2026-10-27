@@ -203,9 +203,21 @@ bool MAC::inject (MessageKind kind, int d_id, int data_length, float t_output, N
     packet->send_out_time = pecycle;
     packet->in_net_time = pecycle;
 
-    net->vcNetwork->NI_list[NI_id]->trySend(packet);
+    submitPacket(packet);
 
     return true;
+}
+
+void MAC::submitPacket(Packet* packet) {
+    if (!pending_tx.empty() || !net->vcNetwork->NI_list[NI_id]->trySend(packet))
+        pending_tx.push_back(packet);
+}
+
+void MAC::retryPendingTx() {
+    while (!pending_tx.empty()) {
+        if (!net->vcNetwork->NI_list[NI_id]->trySend(pending_tx.front())) return;
+        pending_tx.pop_front();
+    }
 }
 
 void MAC::accountDataWait()
@@ -244,6 +256,13 @@ void MAC::runOneStep()
     // Sample before scheduler gating so a PE waiting for a response is still
     // charged while its local pecycle is in the future.
     accountDataWait();
+    retryPendingTx();
+    if (hasPendingTx()) {
+        // Earlier results of a batch may already return while later results
+        // are still blocked. Allow their ACKs without completing the task.
+        if (selfstatus == 4 && pecycle < context.cycles) send = 1;
+        return;
+    }
 
     // output stationary (neuron based calculation)
     if (pecycle < context.cycles){
@@ -1096,6 +1115,5 @@ void MAC::relu(float& x)  // 1
 
 // Destructor
 MAC::~MAC (){
-
-
+    for (Packet* packet : pending_tx) Packet::release(packet);
 }

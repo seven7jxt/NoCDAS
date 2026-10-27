@@ -47,6 +47,13 @@
 #endif
 #endif
 
+// Waiting packets per NI virtual network; 0 preserves the unbounded TX queue.
+// This does not limit flit buffers or scale with data quantization.
+#ifndef NI_TX_PACKET_CAPACITY
+#define NI_TX_PACKET_CAPACITY 0
+#endif
+static_assert(NI_TX_PACKET_CAPACITY >= 0, "NI_TX_PACKET_CAPACITY must be nonnegative");
+
 #define NI_TX_FIFO_DEPTH (32 * QUANT_MULTIPLIER)   
 #define NI_RX_FIFO_DEPTH (32 * QUANT_MULTIPLIER)
 
@@ -161,8 +168,12 @@
 #define LCS_URS_TRAFFIC					// standard traffic mode, LCS: Latency Critical Service, URS: Unspecified Rate Service
 #define INPORT_FLIT_BUFFER_SIZE 4; 		// flit buffer size per VC channel
 #define FLIT_LENGTH 32 					// byte 32*8=256bit  // lenghth of flit in byte
-#define INFINITE 10000    				// added for in port and out port buffer
-#define INFINITE1 10000  				// added for flit buffer
+// Large finite flit buffers used by the abstract NI model (not unbounded queues).
+#define NI_TX_VC_DEPTH_FLITS 10000       // Per transmit VC, before NI arbitration
+#define NI_RX_VC_DEPTH_FLITS 10000       // Per receive VC, before packet assembly
+#define NI_TX_PORT_DEPTH_FLITS 10000     // Shared NI output port, after arbitration
+// Router output depth only when outPortNoInfinite is disabled.
+#define ROUTER_LARGE_OUTPUT_DEPTH_FLITS 10000
 #define CACHE_DELAY 1  					// simulate cache memory access delay (5ns = 1 clock cycle under 200 MHz frequency)
 #define LINK_TIME 2						// latency for link transfer
 #define DISTRIBUTION_NUM 20				// threshold for counting end-to end packet delay is good (<20 is good)

@@ -106,8 +106,12 @@ public:
 	// for print
 	vector<Cycle> Layer_latency;
     
-    // 0 = Idle, 1 = Weights distribution, 2 = In-Transit computation, 3 = wait for results
+    // 0 = Idle, 1 = Distributing, 2 = Injecting compute, 3 = Waiting for results.
+    // Results may return during phase 2; count them independently of injection.
     int cnoc_phase;
+    size_t cnoc_send_index = 0;
+    int cnoc_results_remaining = 0;
+    Packet* cnoc_pending_tx = nullptr;
     
 	// Sorted path of routers that will perform in-transit computation
     std::deque<int> cnoc_compute_path;

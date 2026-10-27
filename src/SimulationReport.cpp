@@ -91,9 +91,10 @@ void Simulation::writeJson(std::ostream& destination) const {
     const int vc_depth = INPORT_FLIT_BUFFER_SIZE;
     out << ", \"router_vc_depth_flits\": " << vc_depth
         << ", \"ni_tx_fifo_depth_setting\": " << NI_TX_FIFO_DEPTH
+        << ", \"ni_tx_packet_capacity_per_vn\": " << NI_TX_PACKET_CAPACITY
         << ", \"ni_rx_fifo_depth_setting\": " << NI_RX_FIFO_DEPTH
-        << ", \"ni_tx_flit_depth\": " << INFINITE1
-        << ", \"ni_rx_flit_depth\": " << INFINITE
+        << ", \"ni_tx_flit_depth\": " << NI_TX_VC_DEPTH_FLITS
+        << ", \"ni_rx_flit_depth\": " << NI_RX_VC_DEPTH_FLITS
         << ", \"pe_weight_sram_bytes\": " << MAC_WEIGHT_SRAM_LIMIT * DATA_BYTES
         << ", \"pe_input_sram_bytes\": " << MAC_INPUT_SRAM_LIMIT * DATA_BYTES
         << ", \"pe_kv_cache_bytes\": " << KV_CACHE_SIZE * DATA_BYTES
@@ -150,7 +151,20 @@ void Simulation::writeJson(std::ostream& destination) const {
             << ",\"service_occupied_cycles\":" << r.service_occupied_cycles
             << ",\"kv_hold_cycles\":" << r.kv_hold_cycles << '}';
     }
-    out << "]}\n}\n";
+    out << "]},\n  \"ni_tx\": [";
+    for (size_t i = 0; i < vcNetwork->NI_list.size(); ++i) {
+        if (i) out << ',';
+        const auto* ni = vcNetwork->NI_list[i];
+        out << "{\"id\":" << ni->id
+            << ",\"rejected_send_attempts\":" << ni->txRejectedAttempts()
+            << ",\"peak_queued_packets_per_vn\":[";
+        for (int vn = 0; vn < ni->vn_num; ++vn) {
+            if (vn) out << ',';
+            out << ni->txPeak(static_cast<VirtualNetwork>(vn));
+        }
+        out << "]}";
+    }
+    out << "]\n}\n";
     destination << out.str();
 }
 

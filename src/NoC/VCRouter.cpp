@@ -49,7 +49,7 @@ VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t
     #ifdef outPortNoInfinite
         ROutPort * t_rOutPort = new ROutPort(context, i, 1, 1, 0, i == 4 ? 2 : 1);
     #else
-        ROutPort * t_rOutPort = new ROutPort(context, i, 1, 1, 0, INFINITE);
+        ROutPort * t_rOutPort = new ROutPort(context, i, 1, 1, 0, ROUTER_LARGE_OUTPUT_DEPTH_FLITS);
     #endif
         out_port_list.push_back(t_rOutPort);
     }

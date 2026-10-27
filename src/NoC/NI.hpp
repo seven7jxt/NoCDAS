@@ -79,11 +79,14 @@ public:
 
 
 
-  // TX is intentionally unbounded in this refactor. A successful trySend
+  // NI_TX_PACKET_CAPACITY limits waiting packets per VN (0 means unbounded).
+  // A successful trySend
   // transfers packet ownership to the NI; submit each allocation once.
-  // Future bounded TX can return false without transferring ownership.
+  // On a full queue, false leaves ownership and packet timestamps unchanged.
   bool trySend(Packet* packet);
   size_t txQueued(VirtualNetwork network) const;
+  size_t txPeak(VirtualNetwork network) const { return tx_peak.at(vnIndex(network)); }
+  std::uint64_t txRejectedAttempts() const { return tx_rejected_attempts; }
 
   // Selective scan preserves legacy scheduling: skipping a not-ready packet
   // does not prevent later eligible packets from being serviced this cycle.
@@ -118,6 +121,8 @@ public:
 
   ~NI();
 private:
+  std::vector<size_t> tx_peak;
+  std::uint64_t tx_rejected_attempts = 0;
   friend class NIPacketizer;
   friend class NIPacketAssembler;
   std::vector<PacketBuffer*> packetBuffer_list;

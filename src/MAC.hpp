@@ -154,6 +154,11 @@ class MAC
 	MAC* nextMAC;
 
 	bool inject (MessageKind kind, int d_id, int data_length, float t_output, NI* t_NI, int p_id, int mac_src);
+    // Keeps unsent packets from the current operation in order. No next
+    // operation is started until they have been accepted by the NI.
+    void submitPacket(Packet* packet);
+    bool hasPendingTx() const { return !pending_tx.empty(); }
+    void retryPendingTx();
 	void receive (Message* re_msg);
 	void runOneStep();
 	void accountDataWait();
@@ -163,6 +168,8 @@ class MAC
 	void relu(float& x);
 
 	~MAC ();
+private:
+    std::deque<Packet*> pending_tx;
 };
 
 #endif /* MAC_HPP_ */
