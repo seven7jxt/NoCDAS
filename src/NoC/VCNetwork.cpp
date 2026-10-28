@@ -22,7 +22,8 @@ VCNetwork::VCNetwork (SimulationContext& sim, int router_num, int router_num_x, 
     id[0] = i/router_num_x;
     id[1] = i%router_num_x;
     int in_out_port_num = 4 + NI_num[i]; //NI_num[i] = 1, in total 64 NI
-    VCRouter* vcRouter = new VCRouter(id, in_out_port_num, this, t_vn_num, t_vc_per_vn, t_vc_priority_per_vn, t_in_depth);
+    VCRouter* vcRouter = new VCRouter(id, in_out_port_num, this, t_vn_num, t_vc_per_vn, t_vc_priority_per_vn, t_in_depth,
+        context.compute.makeUnit({ComputeRole::Router, i}));
     router_list.push_back(vcRouter);
 
     // firstly connect NI to corresponding router

@@ -138,9 +138,9 @@ public:
         std::deque<float> inbuffer;
         size_t issued = 0;
         size_t batch_count = 0;
-        SerialComputeUnit compute_unit;
+        std::unique_ptr<ComputeUnit> compute_unit;
         bool waiting_for_input = false;
-        void issue(Cycle now, Cycle operands_ready);
+        void issue(Cycle now, Cycle operands_ready, const TerminalComputeConfig& config);
     };
     std::vector<std::vector<TerminalLane>> terminal_lanes;
     std::vector<std::uint64_t> terminal_outputs;

@@ -15,8 +15,8 @@ static_assert(ROUTER_SRAM_WIDTH > 0 &&
               ROUTER_SRAM_WIDTH % (DATA_BYTES * 8) == 0,
               "Router SRAM interface must hold a whole number of data elements");
 
-VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth)
-    : context(t_vcNetwork->context)
+VCRouter::VCRouter(int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth, std::unique_ptr<ComputeUnit> unit)
+    : context(t_vcNetwork->context), mfu(std::move(unit))
 {
     id[0] = t_id[0];  
     id[1] = t_id[1];  
@@ -233,9 +233,9 @@ void VCRouter::getSwitch(){
 }
 
 Cycle VCRouter::reserveMFU(Cycle duration) {
-    [[maybe_unused]] const bool accepted = mfu.tryIssue({duration}, context.cycles);
+    [[maybe_unused]] const bool accepted = mfu->tryIssue({duration}, context.cycles);
     assert(accepted);
-    return mfu.scheduled().ready_at;
+    return mfu->scheduled().ready_at;
 }
 
 void VCRouter::outPortDequeue(){
@@ -252,8 +252,8 @@ void VCRouter::outPortDequeue(){
                 // Retire before each candidate, preserving same-cycle reuse
                 // for a zero-duration reservation as well as normal completion.
                 ComputeCompletion completion;
-                mfu.tryComplete(context.cycles, completion);
-                if (mfu.busy()) {
+                mfu->tryComplete(context.cycles, completion);
+                if (mfu->busy()) {
                     // A KV retry occupies the router-wide MFU, but other
                     // eligible flits blocked by that same hold are waiting
                     // for the MFU, not for their own KV data.
@@ -315,7 +315,7 @@ void VCRouter::outPortDequeue(){
 
                 if (is_target) {
                     if (!flit->computed_routers.test(this_router)) {
-                        compute_delay = LegacyComputeTiming::routerDistribution(flit->get_payload_size());
+                        compute_delay = LegacyComputeTiming::routerDistribution(flit->get_payload_size(), context.compute.router);
                     }
                     processDistributionPacket(flit);
                 }
@@ -330,9 +330,9 @@ void VCRouter::outPortDequeue(){
                 if (opcode == ATTENTION) {
                     // Normalize at the same tail event as before; timing has no data side effects.
                     const auto work = finishAttention(flit);
-                    compute_delay = LegacyComputeTiming::routerAttention(work);
+                    compute_delay = LegacyComputeTiming::routerAttention(work, context.compute.router);
                 } else {
-                    compute_delay = LegacyComputeTiming::routerOperator(opcode, matmul_macs);
+                    compute_delay = LegacyComputeTiming::routerOperator(opcode, matmul_macs, context.compute.router);
                 }
             }
 
@@ -381,7 +381,7 @@ void VCRouter::runOneStep(){
     vcRequest();
     getSwitch();
     outPortDequeue();
-    vcNetwork->sampleRouterOccupancy(id[0] * X_NUM + id[1], mfu.scheduled().ready_at, kv_retry_until);
+    vcNetwork->sampleRouterOccupancy(id[0] * X_NUM + id[1], mfu->scheduled().ready_at, kv_retry_until);
 }
 
 bool VCRouter::allocateSRAM(int num_floats) {

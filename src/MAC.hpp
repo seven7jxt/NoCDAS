@@ -71,7 +71,8 @@ class MAC
   /** @brief MAC
    *
    */
-	MAC (int t_id, MACnet* t_net, int t_NI_id);
+	MAC (int t_id, MACnet* t_net, int t_NI_id,
+         std::unique_ptr<ComputeUnit> unit = std::make_unique<SerialComputeUnit>());
 	MACnet* net;
 	int id;
 	int fn;
@@ -171,7 +172,8 @@ class MAC
 
 	~MAC ();
 private:
-    SerialComputeUnit compute_unit;
+    // MC proxy MACs have no PE compute unit; their terminal lanes are separate.
+    std::unique_ptr<ComputeUnit> compute_unit;
     void scheduleCompute(Cycle duration);
     float computeTransformerElement();
     PEAttentionWork computeAttentionElement();

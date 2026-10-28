@@ -47,7 +47,8 @@ public:
       }
   };
 
-  VCRouter (int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth);
+  VCRouter (int* t_id, int in_out_port_num, VCNetwork* t_vcNetwork, int t_vn_num, int t_vc_per_vn, int t_vc_priority_per_vn, int t_in_depth,
+            std::unique_ptr<ComputeUnit> unit = std::make_unique<SerialComputeUnit>());
 
   // Main methods
   int getRoute(Flit* t_flit);
@@ -124,7 +125,7 @@ public:
 
   ~VCRouter ();
 private:
-  SerialComputeUnit mfu;
+  std::unique_ptr<ComputeUnit> mfu;
   Cycle reserveMFU(Cycle duration);
 };
 

@@ -12,6 +12,7 @@ StopReason Simulation::run() {
     if (result_.status != StopReason::NotStarted || cnnmodel)
         throw std::logic_error("A Simulation instance can only run once");
     context_.cycles = 0;
+    context_.compute = options_.compute;
     context_.packet_id_base = 0;
     context_.packet_trace_limit = options_.packet_trace_limit;
     cnnmodel = std::make_unique<Model>(options_.model_file, options_.weight_file, options_.input_file);

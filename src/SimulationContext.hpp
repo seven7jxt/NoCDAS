@@ -2,6 +2,7 @@
 #define NOCDAS_SIMULATION_CONTEXT_HPP_
 
 #include "SimulationTime.hpp"
+#include "ComputeResources.hpp"
 #include "parameters.hpp"
 #include <vector>
 #include <memory>
@@ -42,6 +43,7 @@ struct SimulationContext {
     // Outlives the network and releases all backing storage, including aborted traffic.
     std::unique_ptr<NetworkStorage> objects;
     Cycle cycles = 0;
+    ComputeResources compute;
     // Legacy task-based packet ID base; retain its allocation scheme in this phase.
     int packet_id_base = 0;
     PacketId next_packet_id = 0;

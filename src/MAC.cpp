@@ -23,8 +23,8 @@ static_assert(PE_GATE_BATCH_PAIRS > 0 && MAC_INPUT_SRAM_LIMIT >= 2,
 static_assert(PE_ADD_BATCH_PAIRS > 0 && PE_NUM_OP > 0 && ADD_LATENCY > 0,
               "ADD batch size, throughput and latency must be positive");
 
-MAC::MAC (int t_id, MACnet* t_net, int t_NI_id)
-    : context(t_net->context)
+MAC::MAC (int t_id, MACnet* t_net, int t_NI_id, std::unique_ptr<ComputeUnit> unit)
+    : context(t_net->context), compute_unit(std::move(unit))
 {
     id = t_id;
     net = t_net;
@@ -255,9 +255,9 @@ void MAC::finishDataWait()
 
 void MAC::scheduleCompute(Cycle duration)
 {
-    [[maybe_unused]] const bool accepted = compute_unit.tryIssue({duration}, context.cycles);
+    [[maybe_unused]] const bool accepted = compute_unit->tryIssue({duration}, context.cycles);
     assert(accepted);
-    pecycle = compute_unit.scheduled().ready_at;
+    pecycle = compute_unit->scheduled().ready_at;
 }
 
 void MAC::runOneStep()
@@ -265,7 +265,7 @@ void MAC::runOneStep()
     // Completion is available at ready_at. The existing strict pecycle < now
     // gate still controls PE transitions; pecycle also carries non-compute waits.
     ComputeCompletion completion;
-    compute_unit.tryComplete(context.cycles, completion);
+    if (compute_unit) compute_unit->tryComplete(context.cycles, completion);
     // Sample before scheduler gating so a PE waiting for a response is still
     // charged while its local pecycle is in the future.
     accountDataWait();
@@ -486,7 +486,7 @@ void MAC::runOneStep()
             return;
         }
         else if(selfstatus == 3){
-            if (compute_unit.busy()) return;
+            if (compute_unit->busy()) return;
 #ifdef cNoC_MODE
             // In cNoC mode, the MAC units act like co-processors for global reductions.
             // They should not execute MatMul, Add, or SwiGLU operations, as those are performed in-transit on the routers.
@@ -551,7 +551,7 @@ void MAC::runOneStep()
                     send = 1; // Earlier scalar results may return before the batch finishes.
                     // Reserve the whole batch; individual results retain their
                     // original offsets within it, including equal-ready ADDs.
-                    scheduleCompute(LegacyComputeTiming::peElementwiseBatch(fn, elementwise_tasks.size() - 1));
+                    scheduleCompute(LegacyComputeTiming::peElementwiseBatch(fn, elementwise_tasks.size() - 1, context.compute.pe));
                     for (size_t index = 0; index < elementwise_tasks.size(); ++index) {
                         const float gate = infeature[2 * index];
                         const float up = infeature[2 * index + 1];
@@ -559,7 +559,7 @@ void MAC::runOneStep()
                         // Reuse consumed input space; output packets model timed egress.
                         infeature[index] = outfeature;
                         tmpm = elementwise_tasks[index];
-                        pecycle = compute_unit.scheduled().started_at + LegacyComputeTiming::peElementwiseBatch(fn, index);
+                        pecycle = compute_unit->scheduled().started_at + LegacyComputeTiming::peElementwiseBatch(fn, index, context.compute.pe);
                         inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id],
                                context.packet_id_base + tmpm, id);
                     }
@@ -583,7 +583,7 @@ void MAC::runOneStep()
                 else { // ATTENTION: cache updates and arithmetic precede timed result delivery.
                     const auto work = computeAttentionElement();
                     selfstatus = 4;
-                    scheduleCompute(LegacyComputeTiming::peAttention(work));
+                    scheduleCompute(LegacyComputeTiming::peAttention(work, context.compute.pe));
                     inject(MessageKind::Result, dest_mem_id, 1, outfeature, net->vcNetwork->NI_list[NI_id], context.packet_id_base + tmp_request, id);
 
 
@@ -591,7 +591,7 @@ void MAC::runOneStep()
                 }
 
                 const Cycle calctime = LegacyComputeTiming::peTransformer(
-                    fn, m_size, use_matmul_tiling && matmul_tile_count > 0 ? matmul_tile_count : 1);
+                    fn, m_size, use_matmul_tiling && matmul_tile_count > 0 ? matmul_tile_count : 1, context.compute.pe);
 
                 selfstatus = 4; // ready for output
                 scheduleCompute(calctime);
@@ -623,7 +623,7 @@ void MAC::runOneStep()
                 operation_count *= matmul_tile_count;
             }
             const Cycle calctime = LegacyComputeTiming::peConvOrDense(
-                operation_count, fn % 4 == 0 && current_chunk == total_chunks - 1);
+                operation_count, fn % 4 == 0 && current_chunk == total_chunks - 1, context.compute.pe);
             scheduleCompute(calctime);
 
             if (current_chunk < total_chunks - 1) {

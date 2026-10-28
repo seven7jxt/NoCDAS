@@ -81,6 +81,7 @@ MACnet::MACnet (int mac_num, int t_pe_x, int t_pe_y, Model *m, VCNetwork* t_Netw
     int gate_resources = 0;
     for (int pe = 0; pe < macNum; ++pe)
         if (!contains(dest_list, pe % TOT_NUM)) ++gate_resources;
+    if (context.compute.terminal.lanes != 0) gate_resources = context.compute.terminal.lanes;
     terminal_lanes.resize(MEM_NODES);
     terminal_outputs.assign(MEM_NODES, 0);
     for (int mc = 0; mc < MEM_NODES; ++mc) {
@@ -89,17 +90,22 @@ MACnet::MACnet (int mac_num, int t_pe_x, int t_pe_y, Model *m, VCNetwork* t_Netw
             std::cerr << "Not enough PE-equivalent gate lanes for all MC terminals\n";
             std::exit(EXIT_FAILURE);
         }
+        for (size_t lane = 0; lane < terminal_lanes[mc].size(); ++lane)
+            terminal_lanes[mc][lane].compute_unit = context.compute.makeUnit(
+                {ComputeRole::Terminal, dest_list[mc], static_cast<int>(lane)});
     }
 #ifdef cNoC_MODE
     std::cout << "TERMINAL_RESOURCES lanes=" << gate_resources << " mc=" << MEM_NODES
-              << " latency=" << PE_GATE_LATENCY << " execution=serial"
-              << " freq-ratio=" << PE_FREQ_RATIO
+              << " latency=" << context.compute.terminal.gate_latency
+              << " execution=" << (context.compute.factory ? "custom" : "serial")
+              << " freq-ratio=" << context.compute.terminal.clock_ratio
               << " input-queue=abstract batch-pairs=" << CNOC_GATE_BATCH_PAIRS << '\n';
 #endif
 
     for(int i=0; i<macNum; i++){ 
         temp_ni_id = i%TOT_NUM;
-        MAC* nMAC = new MAC(i, this, temp_ni_id); 
+        MAC* nMAC = new MAC(i, this, temp_ni_id, contains(dest_list, temp_ni_id) ? nullptr :
+            context.compute.makeUnit({ComputeRole::PE, temp_ni_id, i / TOT_NUM}));
         MAC_list.push_back(nMAC);
     }
 
@@ -769,9 +775,9 @@ void MACnet::inject_cNoC_traffic() {
     }
 }
 
-void MACnet::TerminalLane::issue(Cycle now, Cycle operands_ready) {
-    [[maybe_unused]] const bool accepted = compute_unit.tryIssue(
-        {LegacyComputeTiming::terminalGate(), operands_ready}, now);
+void MACnet::TerminalLane::issue(Cycle now, Cycle operands_ready, const TerminalComputeConfig& config) {
+    [[maybe_unused]] const bool accepted = compute_unit->tryIssue(
+        {LegacyComputeTiming::terminalGate(config), operands_ready}, now);
     assert(accepted);
 }
 
@@ -781,7 +787,13 @@ void MACnet::start_terminal_gate() {
     terminal_dispatch_ready = context.cycles;
     terminal_outputs.assign(MEM_NODES, 0);
     for (auto& lanes : terminal_lanes)
-        for (auto& lane : lanes) lane = TerminalLane{};
+        for (auto& lane : lanes) {
+            // Keep the bound resource across layers; only reset workload state.
+            lane.tasks.clear();
+            lane.inbuffer.clear();
+            lane.issued = lane.batch_count = 0;
+            lane.waiting_for_input = false;
+        }
     for (int y = 0; y < o_y; ++y) {
         auto& lanes = terminal_lanes[y % MEM_NODES];
         for (int k = 0; k < o_x; ++k)
@@ -802,7 +814,7 @@ void MACnet::run_terminal_gate() {
             assert(packet->message.data.size() == 2 * lane.batch_count);
             lane.inbuffer.assign(packet->message.data.begin(), packet->message.data.end());
             lane.waiting_for_input = false;
-            lane.issue(context.cycles, context.cycles);
+            lane.issue(context.cycles, context.cycles, context.compute.terminal);
             received.take();
             packet->mark(PacketEvent::Consumed, context.cycles);
             Packet::release(packet);
@@ -829,7 +841,7 @@ void MACnet::run_terminal_gate() {
                 terminal_dispatch_ready = context.cycles + refill + (mc == 0 ? 0 : copy);
                 if (mc == 0) {
                     lane.inbuffer.assign(operands.begin(), operands.end());
-                    lane.issue(context.cycles, terminal_dispatch_ready);
+                    lane.issue(context.cycles, terminal_dispatch_ready, context.compute.terminal);
                 } else {
                     Message message{};
                     message.kind = MessageKind::TerminalOperands;
@@ -850,7 +862,7 @@ void MACnet::run_terminal_gate() {
             }
             if (lane.waiting_for_input) continue;
             ComputeCompletion completion;
-            if (lane.compute_unit.tryComplete(context.cycles, completion)) {
+            if (lane.compute_unit->tryComplete(context.cycles, completion)) {
                 const float gate = lane.inbuffer.front();
                 lane.inbuffer.pop_front();
                 const float up = lane.inbuffer.front();
@@ -859,7 +871,8 @@ void MACnet::run_terminal_gate() {
                 output_table[0][lane.tasks.front()] = value;
                 lane.tasks.pop_front();
                 ++lane.issued;
-                if (lane.issued < lane.batch_count) lane.issue(context.cycles, context.cycles);
+                if (lane.issued < lane.batch_count)
+                    lane.issue(context.cycles, context.cycles, context.compute.terminal);
                 ++terminal_outputs[mc];
                 --terminal_remaining;
             }

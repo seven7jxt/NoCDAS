@@ -19,6 +19,7 @@ struct SimulationOptions {
     std::string input_file = DEFAULT_NNINPUT_FILENAME;
     size_t packet_trace_limit = CountNum;
     Cycle max_cycles = 50000000000ULL;
+    ComputeResources compute;
 };
 
 // Owns one execution. The network step ordering and readiness rules are legacy.

@@ -81,10 +81,10 @@ void Simulation::writeJson(std::ostream& destination) const {
         << "\n  \"config\": {\"mesh_x\": " << X_NUM << ", \"mesh_y\": " << Y_NUM
         << ", \"nodes\": " << TOT_NUM << ", \"mc_nodes\": " << MEM_NODES
         << ", \"noc_frequency_ghz\": " << FREQUENCY
-        << ", \"pe_frequency_ratio\": " << PE_FREQ_RATIO
-        << ", \"pe_ops_per_cycle\": " << PE_NUM_OP
-        << ", \"router_macs_per_cycle\": " << ROUTER_MACS_PER_CYCLE
-        << ", \"router_sram_width_bits\": " << ROUTER_SRAM_WIDTH
+        << ", \"pe_frequency_ratio\": " << context_.compute.pe.clock_ratio
+        << ", \"pe_ops_per_cycle\": " << context_.compute.pe.ops_per_cycle
+        << ", \"router_macs_per_cycle\": " << context_.compute.router.macs_per_cycle
+        << ", \"router_sram_width_bits\": " << context_.compute.router.sram_width_bits
         << ", \"flit_bytes\": " << FLIT_LENGTH << ", \"data_bytes\": " << DATA_BYTES
         << ", \"vn_count\": " << VN_NUM << ", \"vc_per_vn\": " << VC_PER_VN
         << ", \"priority_vc_per_vn\": " << VC_PRIORITY_PER_VN;
@@ -105,6 +105,16 @@ void Simulation::writeJson(std::ostream& destination) const {
         << ", \"cache_delay_cycles\": " << CACHE_DELAY
         << ", \"mc_node_ids\": [";
     for (int i = 0; i < MEM_NODES; ++i) { if (i) out << ','; out << dest_list[i]; }
+    out << "]},\n  \"compute_resources\": {\"unit_factory\": "
+        << jsonString(context_.compute.factory ? "custom" : "serial")
+        << ", \"pe_gate_latency_local_cycles\": " << context_.compute.pe.gate_latency
+        << ", \"terminal_clock_ratio\": " << context_.compute.terminal.clock_ratio
+        << ", \"terminal_gate_latency_local_cycles\": " << context_.compute.terminal.gate_latency
+        << ", \"terminal_lanes_per_mc\": [";
+    for (size_t mc = 0; mc < macnet->terminal_lanes.size(); ++mc) {
+        if (mc) out << ',';
+        out << macnet->terminal_lanes[mc].size();
+    }
     out << "]},\n  \"traffic\": {\"legacy_packet_id_base\": " << context_.packet_id_base
         << ", \"packets_packetized\": " << static_cast<std::uint64_t>(ns.count_s) + ns.count_s_resp
         << ", \"packets_delivered_to_ni_queue\": " << static_cast<std::uint64_t>(ns.count_r) + ns.count_r_resp
